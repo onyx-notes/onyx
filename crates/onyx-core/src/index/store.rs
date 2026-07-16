@@ -110,6 +110,18 @@ pub struct TagCount {
     pub count: u64,
 }
 
+/// A node's resolution keys, for bulk graph construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphNode {
+    pub id: NoteId,
+    pub path_key: String,
+    pub lookup_path: String,
+    pub lookup_name: String,
+}
+
+/// Bulk graph payload: all nodes plus raw `(src, target_key)` edges.
+pub type GraphData = (Vec<GraphNode>, Vec<(NoteId, String)>);
+
 pub(super) struct Store {
     conn: Connection,
 }
@@ -498,6 +510,47 @@ impl Store {
             })?
             .collect::<Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// All nodes and raw internal link edges `(src, target_key)` in one
+    /// pass — the graph resolves targets itself with prebuilt maps instead
+    /// of one query per link.
+    pub fn graph_data(&self) -> Result<GraphData, IndexError> {
+        let mut node_statement = self
+            .conn
+            .prepare("SELECT id, path_key, lookup_path, lookup_name FROM notes")?;
+        let nodes: Vec<GraphNode> = node_statement
+            .query_map([], |row| {
+                let bytes: Vec<u8> = row.get(0)?;
+                Ok((bytes, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(|result| {
+                let (bytes, path_key, lookup_path, lookup_name): (Vec<u8>, String, String, String) =
+                    result.ok()?;
+                Some(GraphNode {
+                    id: NoteId::from_bytes(bytes.try_into().ok()?),
+                    path_key,
+                    lookup_path,
+                    lookup_name,
+                })
+            })
+            .collect();
+
+        let mut edge_statement = self
+            .conn
+            .prepare("SELECT src, target_key FROM links WHERE target_key != ''")?;
+        let edges: Vec<(NoteId, String)> = edge_statement
+            .query_map([], |row| {
+                let bytes: Vec<u8> = row.get(0)?;
+                Ok((bytes, row.get(1)?))
+            })?
+            .filter_map(|result| {
+                let (bytes, target): (Vec<u8>, String) = result.ok()?;
+                Some((NoteId::from_bytes(bytes.try_into().ok()?), target))
+            })
+            .collect();
+
+        Ok((nodes, edges))
     }
 
     pub fn unresolved_targets(&self) -> Result<Vec<String>, IndexError> {

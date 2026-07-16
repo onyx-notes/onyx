@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Onyx build/bench tasks"
+description = "Onyx build/bench tasks: corpus generation, perf measurements"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,5 @@ authors.workspace = true
 publish = false
 
 [dependencies]
+onyx-core = { workspace = true }
+onyx-testkit = { workspace = true }

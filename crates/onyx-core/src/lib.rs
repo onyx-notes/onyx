@@ -23,18 +23,24 @@
 mod coalescer;
 mod events;
 mod fs;
+mod graph;
 mod index;
 mod journal;
 mod paths;
+mod quick;
+mod search;
 mod vault;
 mod watcher;
 
 pub use coalescer::{Coalescer, CoalescerConfig, RawEvent};
 pub use events::VaultEvent;
 pub use fs::{FileStat, MemFs, RealFs, VaultFs};
-pub use index::{BacklinkRow, Index, IndexError, NoteRecord, TagCount};
+pub use graph::LinkGraph;
+pub use index::{BacklinkRow, GraphData, GraphNode, Index, IndexError, NoteRecord, TagCount};
 pub use journal::WriteJournal;
 pub use paths::{NoteId, NotePath, PathError};
+pub use quick::{QuickHit, QuickSwitcher};
+pub use search::{SearchError, SearchHit, SearchIndex};
 pub use vault::{NoteMeta, Vault, VaultConfig};
 pub use watcher::VaultWatcher;
 

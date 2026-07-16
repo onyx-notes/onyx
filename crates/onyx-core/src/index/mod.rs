@@ -16,7 +16,7 @@ use crate::events::VaultEvent;
 use crate::paths::{NoteId, NotePath};
 use crate::vault::Vault;
 
-pub use store::{BacklinkRow, IndexError, NoteRecord, TagCount};
+pub use store::{BacklinkRow, GraphData, GraphNode, IndexError, NoteRecord, TagCount};
 
 /// The vault index. One writer at a time (SQLite connection is not shared);
 /// the app layer owns threading.
@@ -144,6 +144,11 @@ impl Index {
     /// Link targets that resolve to no note — "create this note" material.
     pub fn unresolved_targets(&self) -> Result<Vec<String>, IndexError> {
         self.store.unresolved_targets()
+    }
+
+    /// Bulk node + edge data for [`crate::LinkGraph`] construction.
+    pub fn graph_data(&self) -> Result<GraphData, IndexError> {
+        self.store.graph_data()
     }
 
     /// Canonical dump of all indexed state, for equality assertions in
