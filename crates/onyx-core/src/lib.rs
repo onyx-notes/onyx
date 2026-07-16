@@ -21,6 +21,7 @@
 //!   yields one `BulkChange` rescan signal, not 10k events.
 
 mod coalescer;
+mod cryptofs;
 mod events;
 mod fs;
 mod graph;
@@ -33,6 +34,7 @@ mod vault;
 mod watcher;
 
 pub use coalescer::{Coalescer, CoalescerConfig, RawEvent};
+pub use cryptofs::CryptoFs;
 pub use events::VaultEvent;
 pub use fs::{FileStat, MemFs, RealFs, VaultFs};
 pub use graph::LinkGraph;

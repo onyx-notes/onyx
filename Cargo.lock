@@ -2551,6 +2551,7 @@ dependencies = [
  "crossbeam-channel",
  "notify",
  "nucleo-matcher",
+ "onyx-crypto",
  "onyx-md",
  "onyx-testkit",
  "parking_lot",

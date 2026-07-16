@@ -14,6 +14,7 @@ crossbeam-channel = { workspace = true }
 notify = { workspace = true }
 nucleo-matcher = { workspace = true }
 tantivy = { workspace = true }
+onyx-crypto = { workspace = true }
 onyx-md = { workspace = true }
 parking_lot = { workspace = true }
 rayon = { workspace = true }
