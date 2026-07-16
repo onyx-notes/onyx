@@ -1,6 +1,6 @@
 [package]
 name = "onyx-proto"
-description = "Onyx: onyx-proto"
+description = "Onyx wire protocol: versioned message types shared by clients and server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,6 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+postcard = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
