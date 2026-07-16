@@ -1,0 +1,20 @@
+{
+  "app.title": "Onyx",
+  "vault.open": "Open vault",
+  "vault.openPrompt": "Enter the path to a vault folder (an Obsidian vault works as-is):",
+  "vault.empty": "No vault open",
+  "vault.noteCount": "{count} notes",
+  "sidebar.files": "Files",
+  "sidebar.newNote": "New note",
+  "sidebar.newNotePrompt": "Path for the new note (e.g. folder/idea.md):",
+  "editor.placeholder": "Select a note to start writing…",
+  "editor.saved": "Saved",
+  "editor.unsaved": "Unsaved changes",
+  "quick.placeholder": "Jump to note…",
+  "search.placeholder": "Search vault…",
+  "search.noResults": "No results",
+  "backlinks.title": "Backlinks",
+  "backlinks.empty": "No backlinks",
+  "error.generic": "Something went wrong: {message}",
+  "status.words": "{count} words"
+}

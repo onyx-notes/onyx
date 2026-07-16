@@ -124,6 +124,11 @@ impl Index {
         self.store.note_count()
     }
 
+    /// All notes ordered by path — the file explorer's data source.
+    pub fn all_notes(&self) -> Result<Vec<NoteRecord>, IndexError> {
+        self.store.all_notes()
+    }
+
     /// Resolve a link target the way Obsidian does: exact vault path
     /// first (with or without `.md`), then unique-enough basename with the
     /// shortest path winning.

@@ -419,6 +419,17 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn all_notes(&self) -> Result<Vec<NoteRecord>, IndexError> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, path, title, is_markdown, size, word_count
+             FROM notes ORDER BY path_key",
+        )?;
+        let rows = statement
+            .query_map([], note_record_from_row)?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     pub fn note_count(&self) -> Result<usize, IndexError> {
         Ok(self
             .conn

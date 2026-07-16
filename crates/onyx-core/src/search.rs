@@ -147,7 +147,21 @@ impl SearchIndex {
         if trimmed.is_empty() {
             return Ok(Vec::new());
         }
-        let (parsed, _syntax_errors) = self.parser.parse_query_lenient(trimmed);
+        // The query grammar treats `-` as exclusion, so a plain search for
+        // "well-known" would silently EXCLUDE "known". In-word hyphens
+        // become term separators (matching the tokenizer); ` -exclude`
+        // after whitespace keeps its operator meaning.
+        let mut cleaned = String::with_capacity(trimmed.len());
+        let mut previous = ' ';
+        for c in trimmed.chars() {
+            if c == '-' && previous.is_alphanumeric() {
+                cleaned.push(' ');
+            } else {
+                cleaned.push(c);
+            }
+            previous = c;
+        }
+        let (parsed, _syntax_errors) = self.parser.parse_query_lenient(&cleaned);
 
         let searcher = self.reader.searcher();
         let top = searcher.search(&parsed, &TopDocs::with_limit(limit.max(1)))?;
@@ -312,5 +326,28 @@ mod tests {
         }
         let search = SearchIndex::open_in_dir(dir.path()).unwrap();
         assert_eq!(search.search("survives", 10).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod hyphen_tests {
+    use super::*;
+
+    #[test]
+    fn in_word_hyphens_search_not_exclude() {
+        let mut search = SearchIndex::open_in_ram().unwrap();
+        search
+            .upsert(
+                NoteId::from_bytes([1; 16]),
+                "a.md",
+                "a",
+                "a well-known fact",
+                &[],
+            )
+            .unwrap();
+        search.commit().unwrap();
+        assert_eq!(search.search("well-known", 10).unwrap().len(), 1);
+        // Explicit exclusion after whitespace still works.
+        assert!(search.search("fact -known", 10).unwrap().is_empty());
     }
 }
