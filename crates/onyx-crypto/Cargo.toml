@@ -1,0 +1,22 @@
+[package]
+name = "onyx-crypto"
+description = "Onyx cryptography: key hierarchy, chunked AEAD container, filename encryption"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+argon2 = { workspace = true }
+blake3 = { workspace = true }
+chacha20 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+data-encoding = { workspace = true }
+getrandom = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

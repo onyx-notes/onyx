@@ -1,0 +1,89 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/onyx-md",
+    "crates/onyx-crypto",
+    "crates/onyx-core",
+    "crates/onyx-proto",
+    "crates/onyx-sync",
+    "crates/onyx-testkit",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/onyx-notes/onyx"
+authors = ["Onyx contributors"]
+
+[workspace.dependencies]
+# intra-workspace
+onyx-md = { path = "crates/onyx-md" }
+onyx-crypto = { path = "crates/onyx-crypto" }
+onyx-core = { path = "crates/onyx-core" }
+onyx-proto = { path = "crates/onyx-proto" }
+onyx-sync = { path = "crates/onyx-sync" }
+onyx-testkit = { path = "crates/onyx-testkit" }
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_norway = "0.9"
+
+# markdown
+pulldown-cmark = { version = "0.13", default-features = false }
+
+# hashing / crypto
+blake3 = "1"
+chacha20poly1305 = "0.10"
+chacha20 = "0.9"
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.3"
+data-encoding = "2"
+
+# storage / index
+rusqlite = { version = "0.37", features = ["bundled"] }
+tantivy = "0.24"
+
+# fs / paths / concurrency
+notify = "8"
+tempfile = "3"
+unicode-normalization = "0.1"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+dashmap = "6"
+rayon = "1"
+
+# search / matching
+nucleo-matcher = "0.3"
+
+# errors / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# diff / merge
+diffy = "0.4"
+imara-diff = "0.1"
+
+# testing
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+criterion = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.bench]
+debug = true
+
+# Fast iterative dev builds; deps optimized so tantivy/crypto stay usable in dev.
+[profile.dev.package."*"]
+opt-level = 2
