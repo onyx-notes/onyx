@@ -32,6 +32,21 @@ export type VaultEvent =
   | { kind: "removed"; path: string }
   | { kind: "bulk" };
 
+export interface Settings {
+  readableLineLength: boolean;
+  baseFontSize: number;
+  theme: "dark" | "light" | "system";
+  useMarkdownLinks: boolean;
+  newFileFolder: string;
+  attachmentFolder: string;
+  dailyNoteFolder: string;
+}
+
+export interface ObsidianImport {
+  settings: Settings;
+  imported: string[];
+}
+
 export const api = {
   openVault: (path: string) => invoke<VaultInfo>("open_vault", { path }),
   listNotes: () => invoke<NoteInfo[]>("list_notes"),
@@ -47,6 +62,12 @@ export const api = {
   resolveTarget: (target: string) =>
     invoke<string | null>("resolve_target", { target }),
   vaultTags: () => invoke<TagInfo[]>("vault_tags"),
+  getSettings: () => invoke<Settings>("get_settings"),
+  updateSettings: (settings: Settings) =>
+    invoke<void>("update_settings", { settings }),
+  importObsidianSettings: () =>
+    invoke<ObsidianImport>("import_obsidian_settings"),
+  dailyNote: (date: string) => invoke<string>("daily_note", { date }),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
     listen<VaultEvent>("onyx://vault-event", (event) => handler(event.payload)),

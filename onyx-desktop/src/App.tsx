@@ -4,13 +4,36 @@
 
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
-import { type NoteInfo, api } from "./api";
+import { type NoteInfo, type Settings, api } from "./api";
 import Backlinks from "./components/Backlinks";
 import Editor from "./components/Editor";
 import QuickSwitcher from "./components/QuickSwitcher";
+import SettingsModal from "./components/SettingsModal";
 import TabBar from "./components/TabBar";
 import { t } from "./i18n";
 import { createWorkspace } from "./workspace";
+
+/** Push settings into the DOM: theme attribute + CSS variables. */
+function applySettings(settings: Settings) {
+  const root = document.documentElement;
+  const theme =
+    settings.theme === "system"
+      ? window.matchMedia("(prefers-color-scheme: light)").matches
+        ? "light"
+        : "dark"
+      : settings.theme;
+  root.dataset["theme"] = theme;
+  root.style.setProperty("--onyx-editor-font-size", `${settings.baseFontSize}px`);
+  document.body.classList.toggle("full-width", !settings.readableLineLength);
+}
+
+/** Local date as YYYY-MM-DD (daily notes follow the user's timezone). */
+function localDate(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
 
 export default function App() {
   const workspace = createWorkspace();
@@ -20,6 +43,8 @@ export default function App() {
   const [reloadSignal, setReloadSignal] = createSignal(0);
   const [quickOpen, setQuickOpen] = createSignal(false);
   const [showBacklinks, setShowBacklinks] = createSignal(false);
+  const [showSettings, setShowSettings] = createSignal(false);
+  const [settings, setSettings] = createSignal<Settings | null>(null);
   const [vaultEpoch, setVaultEpoch] = createSignal(0);
   const [status, setStatus] = createSignal("");
 
@@ -96,8 +121,32 @@ export default function App() {
     try {
       const info = await api.openVault(path);
       setVaultRoot(info.root);
+      const loaded = await api.getSettings();
+      setSettings(loaded);
+      applySettings(loaded);
       await refreshNotes();
       setStatus(t("vault.noteCount", { count: info.noteCount }));
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const saveSettings = async (updated: Settings) => {
+    try {
+      await api.updateSettings(updated);
+      setSettings(updated);
+      applySettings(updated);
+      setShowSettings(false);
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const openDailyNote = async () => {
+    try {
+      const path = await api.dailyNote(localDate());
+      await refreshNotes();
+      openNote(path);
     } catch (error) {
       report(error);
     }
@@ -147,6 +196,12 @@ export default function App() {
       } else if (mod && event.key === "Tab") {
         event.preventDefault();
         workspace.cycleTab(event.shiftKey ? -1 : 1);
+      } else if (mod && event.key === ",") {
+        event.preventDefault();
+        if (vaultRoot() !== null) setShowSettings(true);
+      } else if (mod && event.shiftKey && key === "d") {
+        event.preventDefault();
+        if (vaultRoot() !== null) void openDailyNote();
       } else if (event.altKey && event.key === "ArrowLeft") {
         event.preventDefault();
         workspace.navigate(-1);
@@ -234,6 +289,11 @@ export default function App() {
               <span>{t("status.words", { count: wordCount() })}</span>
             </Show>
             <span style={{ "margin-left": "auto" }}>{status()}</span>
+            <Show when={vaultRoot()}>
+              <button onClick={() => void openDailyNote()} title={t("daily.open")}>
+                ☀
+              </button>
+            </Show>
             <button onClick={() => workspace.toggleVertical()} title={t("tabs.vertical")}>
               ⊟
             </button>
@@ -243,9 +303,24 @@ export default function App() {
             >
               ⇤
             </button>
+            <Show when={vaultRoot()}>
+              <button onClick={() => setShowSettings(true)} title={t("settings.title")}>
+                ⚙
+              </button>
+            </Show>
           </div>
         </main>
       </div>
+
+      <Show when={showSettings() && settings()}>
+        {(current) => (
+          <SettingsModal
+            settings={current()}
+            onSave={(updated) => void saveSettings(updated)}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
+      </Show>
 
       <Show when={showBacklinks() && vaultRoot()}>
         <Backlinks

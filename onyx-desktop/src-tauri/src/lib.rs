@@ -7,6 +7,7 @@
 mod commands;
 mod engine;
 mod protocol;
+mod settings;
 mod state;
 
 pub use engine::{Engine, EngineError};
@@ -35,6 +36,10 @@ pub fn run() {
             commands::backlinks,
             commands::resolve_target,
             commands::vault_tags,
+            commands::get_settings,
+            commands::update_settings,
+            commands::import_obsidian_settings,
+            commands::daily_note,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

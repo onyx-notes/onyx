@@ -164,6 +164,47 @@ pub fn backlinks(state: State<'_, AppState>, path: String) -> CmdResult<Vec<Stri
     })
 }
 
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> CmdResult<crate::settings::Settings> {
+    state.with_engine(|engine| Ok(crate::settings::load(engine.vault())))
+}
+
+#[tauri::command]
+pub fn update_settings(
+    state: State<'_, AppState>,
+    settings: crate::settings::Settings,
+) -> CmdResult<()> {
+    state.with_engine(|engine| crate::settings::save(engine.vault(), &settings))
+}
+
+/// Read `.obsidian` config and return the mapped settings + a list of what
+/// was found — the frontend shows a review screen before saving anything.
+#[tauri::command]
+pub fn import_obsidian_settings(
+    state: State<'_, AppState>,
+) -> CmdResult<crate::settings::ObsidianImport> {
+    state.with_engine(|engine| {
+        let current = crate::settings::load(engine.vault());
+        Ok(crate::settings::import_obsidian(engine.vault(), &current))
+    })
+}
+
+/// Open (creating if needed) the daily note for `date` (`YYYY-MM-DD`,
+/// frontend-local). Returns its vault path.
+#[tauri::command]
+pub fn daily_note(state: State<'_, AppState>, date: String) -> CmdResult<String> {
+    state.with_engine(|engine| {
+        let settings = crate::settings::load(engine.vault());
+        let path = crate::settings::daily_note_path(&settings, &date)?;
+        if !engine.vault().fs().exists(&path) {
+            engine
+                .write_note(&path, &format!("# {date}\n\n"))
+                .map_err(err)?;
+        }
+        Ok(path.as_str().to_owned())
+    })
+}
+
 /// Resolve a wikilink target ("Note", "folder/Note", "image.png") to a
 /// vault path, exactly like the indexer resolves links. `None` means the
 /// note doesn't exist yet — the frontend offers to create it.
