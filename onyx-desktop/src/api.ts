@@ -26,6 +26,12 @@ export interface TagInfo {
   count: number;
 }
 
+export interface HeadingInfo {
+  level: number;
+  text: string;
+  offset: number;
+}
+
 export type VaultEvent =
   | { kind: "created"; path: string }
   | { kind: "modified"; path: string }
@@ -62,6 +68,9 @@ export const api = {
   resolveTarget: (target: string) =>
     invoke<string | null>("resolve_target", { target }),
   vaultTags: () => invoke<TagInfo[]>("vault_tags"),
+  renderNote: (path: string) => invoke<string>("render_note", { path }),
+  noteHeadings: (path: string) =>
+    invoke<HeadingInfo[]>("note_headings", { path }),
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (settings: Settings) =>
     invoke<void>("update_settings", { settings }),

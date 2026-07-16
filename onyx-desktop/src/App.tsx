@@ -5,9 +5,9 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type NoteInfo, type Settings, api } from "./api";
-import Backlinks from "./components/Backlinks";
 import Editor from "./components/Editor";
 import QuickSwitcher from "./components/QuickSwitcher";
+import RightPanel from "./components/RightPanel";
 import SettingsModal from "./components/SettingsModal";
 import TabBar from "./components/TabBar";
 import { t } from "./i18n";
@@ -46,6 +46,9 @@ export default function App() {
   const [showSettings, setShowSettings] = createSignal(false);
   const [settings, setSettings] = createSignal<Settings | null>(null);
   const [vaultEpoch, setVaultEpoch] = createSignal(0);
+  const [scrollTarget, setScrollTarget] = createSignal<{ offset: number; epoch: number } | null>(
+    null,
+  );
   const [status, setStatus] = createSignal("");
 
   const activePath = workspace.activePath;
@@ -280,6 +283,7 @@ export default function App() {
                 reloadSignal={reloadSignal()}
                 onChange={(body) => void saveNote(body)}
                 onFollowLink={(target) => void followLink(target)}
+                scrollTarget={scrollTarget()}
               />
             )}
           </Show>
@@ -323,10 +327,16 @@ export default function App() {
       </Show>
 
       <Show when={showBacklinks() && vaultRoot()}>
-        <Backlinks
+        <RightPanel
           path={activePath()}
           epoch={vaultEpoch()}
           onOpen={(path) => openNote(path)}
+          onJump={(offset) =>
+            setScrollTarget((previous) => ({
+              offset,
+              epoch: (previous?.epoch ?? 0) + 1,
+            }))
+          }
         />
       </Show>
 

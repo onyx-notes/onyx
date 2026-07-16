@@ -9,6 +9,7 @@ import { basicSetup } from "codemirror";
 import { createEffect, on, onCleanup, onMount } from "solid-js";
 
 import { api } from "../api";
+import { clearEmbedCache } from "../editor/embed-widget";
 import { livePreview } from "../editor/live-preview";
 import { wikilinkCompletion } from "../editor/wikilink-complete";
 
@@ -25,6 +26,8 @@ export interface EditorProps {
   onFollowLink: (target: string) => void;
   /** Bump this counter to force a reload from `content` (external edits). */
   reloadSignal: number;
+  /** Scroll/cursor jump request (outline clicks). */
+  scrollTarget: { offset: number; epoch: number } | null;
 }
 
 export default function Editor(props: EditorProps) {
@@ -53,8 +56,10 @@ export default function Editor(props: EditorProps) {
     return true;
   };
 
-  const buildState = (content: string) =>
-    EditorState.create({
+  const buildState = (content: string) => {
+    // Fresh note or external reload: embedded content may have changed.
+    clearEmbedCache();
+    return EditorState.create({
       doc: content,
       extensions: [
         basicSetup,
@@ -78,6 +83,7 @@ export default function Editor(props: EditorProps) {
         EditorView.theme({}, { dark: true }),
       ],
     });
+  };
 
   onMount(() => {
     view = new EditorView({ state: buildState(props.content), parent: host });
@@ -94,6 +100,22 @@ export default function Editor(props: EditorProps) {
         suppressChange = true;
         view.setState(buildState(props.content));
         suppressChange = false;
+        view.focus();
+      },
+    ),
+  );
+
+  // Outline clicks: place the cursor at the heading and scroll it to top.
+  createEffect(
+    on(
+      () => props.scrollTarget,
+      (target) => {
+        if (!view || !target) return;
+        const offset = Math.min(target.offset, view.state.doc.length);
+        view.dispatch({
+          selection: { anchor: offset },
+          effects: EditorView.scrollIntoView(offset, { y: "start" }),
+        });
         view.focus();
       },
     ),

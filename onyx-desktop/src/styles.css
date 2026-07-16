@@ -527,3 +527,77 @@ body.full-width .editor-host .cm-content {
   background: var(--onyx-accent);
   color: #fff;
 }
+
+/* ---- embeds / transclusions ---- */
+
+.onyx-embed {
+  display: inline-block;
+  width: 100%;
+  border: 1px solid var(--onyx-border);
+  border-left: 3px solid var(--onyx-accent-muted);
+  border-radius: var(--onyx-radius);
+  background: var(--onyx-bg-secondary);
+  padding: 10px 14px;
+  margin: 4px 0;
+  font-size: 0.95em;
+}
+
+.onyx-embed.is-missing {
+  color: var(--onyx-text-muted);
+  font-style: italic;
+}
+
+.onyx-embed h1, .onyx-embed h2, .onyx-embed h3 {
+  font-family: var(--onyx-font-ui);
+  margin: 0.4em 0 0.2em;
+}
+
+.onyx-embed p { margin: 0.4em 0; }
+.onyx-embed ul, .onyx-embed ol { margin: 0.4em 0 0.4em 1.4em; }
+
+.onyx-embed a.onyx-wikilink {
+  color: var(--onyx-accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.onyx-embed a.onyx-wikilink:hover { text-decoration: underline; }
+
+.onyx-embed pre {
+  background: var(--onyx-bg-tertiary);
+  border-radius: var(--onyx-radius);
+  padding: 8px;
+  overflow-x: auto;
+}
+
+.onyx-embed code { font-family: var(--onyx-font-mono); font-size: 0.9em; }
+
+.onyx-embed table { border-collapse: collapse; }
+.onyx-embed th, .onyx-embed td {
+  border: 1px solid var(--onyx-border);
+  padding: 4px 10px;
+}
+
+img.onyx-embed-image {
+  max-width: 100%;
+  border-radius: var(--onyx-radius);
+}
+
+/* ---- right panel (outline + backlinks) ---- */
+
+.right-panel {
+  width: 240px;
+  background: var(--onyx-bg-secondary);
+  border-left: 1px solid var(--onyx-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.right-panel .file-list.outline {
+  flex: 0 1 auto;
+  max-height: 40%;
+}
+
+.outline-item {
+  font-size: 13px;
+}

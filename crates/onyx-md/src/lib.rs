@@ -15,11 +15,13 @@
 //! setext headings and indented code blocks are not recognized.
 
 mod frontmatter;
+mod render;
 mod scanner;
 
 use std::ops::Range;
 
 pub use frontmatter::Frontmatter;
+pub use render::to_html;
 
 /// Everything Onyx indexes about a single note, extracted in one pass.
 #[derive(Debug, Clone, PartialEq)]

@@ -164,6 +164,46 @@ pub fn backlinks(state: State<'_, AppState>, path: String) -> CmdResult<Vec<Stri
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadingInfo {
+    pub level: u8,
+    pub text: String,
+    pub offset: usize,
+}
+
+/// Render a note to HTML for embeds/transclusions and reading view.
+/// Raw HTML in the note is escaped by the renderer (defense in depth
+/// alongside the CSP).
+#[tauri::command]
+pub fn render_note(state: State<'_, AppState>, path: String) -> CmdResult<String> {
+    let note = parse_path(&path)?;
+    state.with_engine(|engine| {
+        let source = engine.vault().read_text(&note).map_err(err)?;
+        Ok(onyx_md::to_html(&source))
+    })
+}
+
+/// Headings of a note, for the outline panel.
+#[tauri::command]
+pub fn note_headings(state: State<'_, AppState>, path: String) -> CmdResult<Vec<HeadingInfo>> {
+    let note = parse_path(&path)?;
+    state.with_engine(|engine| {
+        let id = engine.vault().note_id(&note);
+        Ok(engine
+            .index()
+            .headings(id)
+            .map_err(err)?
+            .into_iter()
+            .map(|heading| HeadingInfo {
+                level: heading.level,
+                text: heading.text,
+                offset: heading.span_start,
+            })
+            .collect())
+    })
+}
+
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> CmdResult<crate::settings::Settings> {
     state.with_engine(|engine| Ok(crate::settings::load(engine.vault())))

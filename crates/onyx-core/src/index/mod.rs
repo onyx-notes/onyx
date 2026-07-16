@@ -16,7 +16,7 @@ use crate::events::VaultEvent;
 use crate::paths::{NoteId, NotePath};
 use crate::vault::Vault;
 
-pub use store::{BacklinkRow, GraphData, GraphNode, IndexError, NoteRecord, TagCount};
+pub use store::{BacklinkRow, GraphData, GraphNode, HeadingRow, IndexError, NoteRecord, TagCount};
 
 /// The vault index. One writer at a time (SQLite connection is not shared);
 /// the app layer owns threading.
@@ -144,6 +144,11 @@ impl Index {
     /// All tags with usage counts (inline + frontmatter), descending.
     pub fn tags(&self) -> Result<Vec<TagCount>, IndexError> {
         self.store.tags()
+    }
+
+    /// Headings of one note, in source order — the outline panel's data.
+    pub fn headings(&self, id: NoteId) -> Result<Vec<HeadingRow>, IndexError> {
+        self.store.headings_of(id)
     }
 
     /// Link targets that resolve to no note — "create this note" material.

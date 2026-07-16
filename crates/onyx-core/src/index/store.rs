@@ -110,6 +110,14 @@ pub struct TagCount {
     pub count: u64,
 }
 
+/// A heading row for outline views.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadingRow {
+    pub level: u8,
+    pub text: String,
+    pub span_start: usize,
+}
+
 /// A node's resolution keys, for bulk graph construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphNode {
@@ -504,6 +512,23 @@ impl Store {
                 });
             }
         }
+        Ok(rows)
+    }
+
+    pub fn headings_of(&self, id: NoteId) -> Result<Vec<HeadingRow>, IndexError> {
+        let mut statement = self.conn.prepare(
+            "SELECT level, text, span_start FROM headings
+             WHERE note_id = ?1 ORDER BY ord",
+        )?;
+        let rows = statement
+            .query_map(params![id.as_bytes()], |row| {
+                Ok(HeadingRow {
+                    level: row.get::<_, i64>(0)? as u8,
+                    text: row.get(1)?,
+                    span_start: row.get::<_, i64>(2)? as usize,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
         Ok(rows)
     }
 

@@ -40,6 +40,8 @@ pub fn run() {
             commands::update_settings,
             commands::import_obsidian_settings,
             commands::daily_note,
+            commands::render_note,
+            commands::note_headings,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

@@ -36,7 +36,9 @@ pub use coalescer::{Coalescer, CoalescerConfig, RawEvent};
 pub use events::VaultEvent;
 pub use fs::{FileStat, MemFs, RealFs, VaultFs};
 pub use graph::LinkGraph;
-pub use index::{BacklinkRow, GraphData, GraphNode, Index, IndexError, NoteRecord, TagCount};
+pub use index::{
+    BacklinkRow, GraphData, GraphNode, HeadingRow, Index, IndexError, NoteRecord, TagCount,
+};
 pub use journal::WriteJournal;
 pub use paths::{NoteId, NotePath, PathError};
 pub use quick::{QuickHit, QuickSwitcher};

@@ -17,6 +17,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 
+import { EmbedWidget } from "./embed-widget";
 import { scanInline } from "./inline-scan";
 
 export interface LivePreviewOptions {
@@ -249,6 +250,13 @@ function build(view: EditorView): DecorationSet {
         const attributes = { "data-onyx-target": link.target };
         if (revealed) {
           mark(link.start, link.end, { class: "cm-onyx-wikilink", attributes });
+        } else if (link.embed) {
+          decorations.push(
+            Decoration.replace({
+              widget: new EmbedWidget(link.target),
+              block: false,
+            }).range(link.start, link.end),
+          );
         } else {
           conceal(link.start, link.displayStart);
           mark(link.displayStart, link.displayEnd, {
@@ -306,6 +314,15 @@ function interactions(options: LivePreviewOptions) {
           options.followLink(linkTarget);
           return true;
         }
+      }
+
+      // Links inside rendered embed HTML (`<a class="onyx-wikilink"
+      // data-target>` from the Rust renderer).
+      const embedLink = target.closest<HTMLElement>("a.onyx-wikilink");
+      if (embedLink?.dataset["target"]) {
+        event.preventDefault();
+        options.followLink(embedLink.dataset["target"]);
+        return true;
       }
       return false;
     },
