@@ -33,6 +33,7 @@ pub fn run() {
             commands::search_notes,
             commands::quick_open,
             commands::backlinks,
+            commands::resolve_target,
             commands::vault_tags,
         ])
         .run(tauri::generate_context!())

@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import solid from "vite-plugin-solid";
 
 // Tauri expects a fixed dev port and no auto-open.
@@ -12,5 +12,9 @@ export default defineConfig({
   build: {
     target: "es2022",
     sourcemap: true,
+  },
+  test: {
+    // Pure-logic tests only; component tests get jsdom when they arrive.
+    environment: "node",
   },
 });

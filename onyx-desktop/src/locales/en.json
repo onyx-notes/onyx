@@ -15,6 +15,10 @@
   "search.noResults": "No results",
   "backlinks.title": "Backlinks",
   "backlinks.empty": "No backlinks",
+  "tabs.new": "New tab",
+  "tabs.close": "Close tab",
+  "tabs.vertical": "Toggle vertical tabs",
+  "note.created": "Created {path}",
   "error.generic": "Something went wrong: {message}",
   "status.words": "{count} words"
 }

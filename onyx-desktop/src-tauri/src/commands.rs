@@ -164,6 +164,23 @@ pub fn backlinks(state: State<'_, AppState>, path: String) -> CmdResult<Vec<Stri
     })
 }
 
+/// Resolve a wikilink target ("Note", "folder/Note", "image.png") to a
+/// vault path, exactly like the indexer resolves links. `None` means the
+/// note doesn't exist yet — the frontend offers to create it.
+#[tauri::command]
+pub fn resolve_target(state: State<'_, AppState>, target: String) -> CmdResult<Option<String>> {
+    state.with_engine(|engine| {
+        let Some(id) = engine.index().resolve(&target).map_err(err)? else {
+            return Ok(None);
+        };
+        Ok(engine
+            .index()
+            .note(id)
+            .map_err(err)?
+            .map(|record| record.path.as_str().to_owned()))
+    })
+}
+
 #[tauri::command]
 pub fn vault_tags(state: State<'_, AppState>) -> CmdResult<Vec<TagInfo>> {
     state.with_engine(|engine| {

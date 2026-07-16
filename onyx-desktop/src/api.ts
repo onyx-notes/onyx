@@ -44,6 +44,8 @@ export const api = {
   searchNotes: (query: string) => invoke<Hit[]>("search_notes", { query }),
   quickOpen: (query: string) => invoke<Hit[]>("quick_open", { query }),
   backlinks: (path: string) => invoke<string[]>("backlinks", { path }),
+  resolveTarget: (target: string) =>
+    invoke<string | null>("resolve_target", { target }),
   vaultTags: () => invoke<TagInfo[]>("vault_tags"),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
