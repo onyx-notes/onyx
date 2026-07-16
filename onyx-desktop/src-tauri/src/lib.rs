@@ -26,6 +26,9 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("onyx", protocol::handle)
         .invoke_handler(tauri::generate_handler![
             commands::open_vault,
+            commands::vault_status,
+            commands::create_encrypted_vault,
+            commands::lock_vault,
             commands::list_notes,
             commands::read_note,
             commands::write_note,

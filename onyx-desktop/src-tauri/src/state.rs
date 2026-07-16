@@ -26,6 +26,15 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Close the current vault: watcher stops, engine drops (vault keys
+    /// zeroize on drop).
+    pub fn lock_vault(&self) {
+        *self.watcher.lock() = None;
+        *self.engine.lock() = None;
+    }
+}
+
+impl AppState {
     /// Run `operation` with the open engine, or fail if no vault is open.
     pub fn with_engine<T>(
         &self,
@@ -58,8 +67,16 @@ pub fn spawn_watcher(
     // thread exits on the next recv.
     *state.watcher.lock() = None;
 
+    // Encrypted vaults need ciphertext → plaintext name translation.
+    let translator = state
+        .engine
+        .lock()
+        .as_ref()
+        .and_then(Engine::path_translator);
+
     let (sender, receiver) = crossbeam_channel::unbounded::<VaultEvent>();
-    let watcher = VaultWatcher::spawn(root, CoalescerConfig::default(), sender)?;
+    let watcher =
+        VaultWatcher::spawn_translated(root, CoalescerConfig::default(), sender, translator)?;
     *state.watcher.lock() = Some(watcher);
 
     let engine = Arc::clone(&state.engine);

@@ -46,7 +46,7 @@ pub use paths::{NoteId, NotePath, PathError};
 pub use quick::{QuickHit, QuickSwitcher};
 pub use search::{SearchError, SearchHit, SearchIndex};
 pub use vault::{NoteMeta, Vault, VaultConfig};
-pub use watcher::VaultWatcher;
+pub use watcher::{PathTranslator, VaultWatcher};
 
 /// Errors from vault operations.
 #[derive(Debug, thiserror::Error)]

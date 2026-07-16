@@ -2587,6 +2587,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "onyx-core",
+ "onyx-crypto",
  "onyx-md",
  "parking_lot",
  "serde",

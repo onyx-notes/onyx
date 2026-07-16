@@ -17,6 +17,11 @@ use crate::coalescer::{Coalescer, CoalescerConfig, RawEvent};
 use crate::events::VaultEvent;
 use crate::paths::NotePath;
 
+/// Maps on-disk names to vault names. Encrypted vaults translate
+/// ciphertext tokens back to plaintext paths; `None` drops the event
+/// (foreign files that aren't part of the vault).
+pub type PathTranslator = std::sync::Arc<dyn Fn(&NotePath) -> Option<NotePath> + Send + Sync>;
+
 /// A running watcher. Dropping it stops the background thread.
 pub struct VaultWatcher {
     // Option so Drop can drop the notify watcher FIRST (disconnecting the
@@ -34,6 +39,17 @@ impl VaultWatcher {
         config: CoalescerConfig,
         output: Sender<VaultEvent>,
     ) -> Result<Self, VaultError> {
+        Self::spawn_translated(root, config, output, None)
+    }
+
+    /// Like [`Self::spawn`], with an optional on-disk → vault path
+    /// translator (encrypted vaults).
+    pub fn spawn_translated(
+        root: &Path,
+        config: CoalescerConfig,
+        output: Sender<VaultEvent>,
+        translator: Option<PathTranslator>,
+    ) -> Result<Self, VaultError> {
         let (raw_sender, raw_receiver) = crossbeam_channel::unbounded();
         let mut watcher = notify::recommended_watcher(move |result| {
             // Send failures mean the consumer thread is gone; nothing to do.
@@ -47,7 +63,7 @@ impl VaultWatcher {
         let root = root.to_path_buf();
         let thread = std::thread::Builder::new()
             .name("onyx-watcher".into())
-            .spawn(move || run_loop(&root, config, &raw_receiver, &output))
+            .spawn(move || run_loop(&root, config, &raw_receiver, &output, translator.as_ref()))
             .map_err(|error| VaultError::Watcher(error.to_string()))?;
 
         Ok(Self {
@@ -76,6 +92,7 @@ fn run_loop(
     config: CoalescerConfig,
     raw: &crossbeam_channel::Receiver<Result<notify::Event, notify::Error>>,
     output: &Sender<VaultEvent>,
+    translator: Option<&PathTranslator>,
 ) {
     let mut coalescer = Coalescer::new(config);
 
@@ -89,7 +106,7 @@ fn run_loop(
         match raw.recv_timeout(wait) {
             Ok(Ok(event)) => {
                 let now = Instant::now();
-                for raw_event in translate(root, &event) {
+                for raw_event in translate(root, &event, translator) {
                     coalescer.push(raw_event, now);
                 }
             }
@@ -114,11 +131,21 @@ fn run_loop(
 }
 
 /// Map a notify event to raw vault events, dropping paths outside the vault
-/// model (hidden dirs, non-UTF-8, directories themselves).
-fn translate(root: &Path, event: &notify::Event) -> Vec<RawEvent> {
+/// model (hidden dirs, non-UTF-8, directories themselves, untranslatable
+/// names in encrypted vaults).
+fn translate(
+    root: &Path,
+    event: &notify::Event,
+    translator: Option<&PathTranslator>,
+) -> Vec<RawEvent> {
     let mut raw_events = Vec::new();
     let mut push = |path: &PathBuf, kind: fn(NotePath) -> RawEvent| {
-        if let Some(note_path) = to_note_path(root, path) {
+        let on_disk = to_note_path(root, path);
+        let vault_path = match translator {
+            Some(translate_name) => on_disk.and_then(|name| translate_name(&name)),
+            None => on_disk,
+        };
+        if let Some(note_path) = vault_path {
             raw_events.push(kind(note_path));
         }
     };
@@ -186,7 +213,7 @@ mod tests {
             ],
             attrs: Default::default(),
         };
-        let raw = translate(&root, &event);
+        let raw = translate(&root, &event, None);
         assert_eq!(
             raw,
             vec![RawEvent::Created(NotePath::new("note.md").unwrap())]
@@ -204,7 +231,7 @@ mod tests {
             ],
             attrs: Default::default(),
         };
-        let raw = translate(&root, &event);
+        let raw = translate(&root, &event, None);
         assert_eq!(
             raw,
             vec![

@@ -11,10 +11,16 @@
 //! [`Engine::apply_event`], so there is exactly one way state changes.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use onyx_core::{
-    Index, NotePath, QuickSwitcher, RealFs, SearchIndex, Vault, VaultConfig, VaultEvent,
+    CryptoFs, Index, NotePath, PathTranslator, QuickSwitcher, RealFs, SearchIndex, Vault,
+    VaultConfig, VaultEvent, VaultFs,
 };
+use onyx_crypto::{KdfParams, Keyfile, VaultKey};
+
+/// Marker + key material for encrypted vaults.
+const KEYFILE_PATH: &str = ".onyx/vault.keyfile";
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -28,6 +34,19 @@ pub enum EngineError {
     Path(#[from] onyx_core::PathError),
     #[error("no vault is open")]
     NoVault,
+    #[error("this vault is encrypted — a passphrase is required")]
+    PassphraseRequired,
+    #[error("wrong passphrase or corrupted keyfile")]
+    WrongPassphrase,
+    #[error("a vault already exists at this location")]
+    VaultExists,
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Is the directory an encrypted Onyx vault?
+pub fn is_encrypted(root: &Path) -> bool {
+    root.join(KEYFILE_PATH).is_file()
 }
 
 pub struct Engine {
@@ -36,22 +55,68 @@ pub struct Engine {
     index: Index,
     search: SearchIndex,
     quick: QuickSwitcher,
+    /// Present for encrypted vaults: translates on-disk ciphertext names
+    /// to vault paths for the watcher.
+    crypto: Option<Arc<CryptoFs>>,
     /// Search commits are debounced by the caller; this tracks dirtiness.
     search_dirty: bool,
 }
 
 impl Engine {
-    /// Open a vault directory: reconcile the on-disk index, then build the
-    /// in-memory search and quick-switcher state.
+    /// Open a plaintext vault. Fails with [`EngineError::PassphraseRequired`]
+    /// if the directory is actually an encrypted vault.
     pub fn open(root: &Path) -> Result<Self, EngineError> {
-        let vault = Vault::new(
-            std::sync::Arc::new(RealFs::new(root)),
-            VaultConfig::default(),
-        );
-        let mut index = Index::open(&root.join(".onyx/index.db"), [0; 16])?;
+        if is_encrypted(root) {
+            return Err(EngineError::PassphraseRequired);
+        }
+        let fs: Arc<dyn VaultFs> = Arc::new(RealFs::new(root));
+        // Plaintext vaults persist their caches on disk.
+        let index = Index::open(&root.join(".onyx/index.db"), [0; 16])?;
+        let search = SearchIndex::open_in_dir(&root.join(".onyx/tantivy"))?;
+        Self::build(root, fs, None, index, search)
+    }
+
+    /// Unlock and open an encrypted vault.
+    pub fn open_encrypted(root: &Path, passphrase: &str) -> Result<Self, EngineError> {
+        let keyfile =
+            std::fs::read(root.join(KEYFILE_PATH)).map_err(|_| EngineError::PassphraseRequired)?;
+        let key = Keyfile::open(&keyfile, passphrase).map_err(|_| EngineError::WrongPassphrase)?;
+        Self::open_with_key(root, key)
+    }
+
+    /// Create a new encrypted vault at an empty (or fresh) directory.
+    pub fn create_encrypted(root: &Path, passphrase: &str) -> Result<Self, EngineError> {
+        if is_encrypted(root) {
+            return Err(EngineError::VaultExists);
+        }
+        std::fs::create_dir_all(root.join(".onyx"))?;
+        let key = VaultKey::generate();
+        let keyfile = Keyfile::seal(&key, passphrase, KdfParams::DESKTOP)
+            .map_err(|_| EngineError::WrongPassphrase)?;
+        std::fs::write(root.join(KEYFILE_PATH), keyfile)?;
+        Self::open_with_key(root, key)
+    }
+
+    fn open_with_key(root: &Path, key: VaultKey) -> Result<Self, EngineError> {
+        let crypto = Arc::new(CryptoFs::new(Arc::new(RealFs::new(root)), key));
+        let fs: Arc<dyn VaultFs> = crypto.clone();
+        // Encrypted vaults keep ALL derived state in RAM — a plaintext
+        // index or search directory on disk would defeat the encryption.
+        let index = Index::open_in_memory([0; 16])?;
+        let search = SearchIndex::open_in_ram()?;
+        Self::build(root, fs, Some(crypto), index, search)
+    }
+
+    fn build(
+        root: &Path,
+        fs: Arc<dyn VaultFs>,
+        crypto: Option<Arc<CryptoFs>>,
+        mut index: Index,
+        mut search: SearchIndex,
+    ) -> Result<Self, EngineError> {
+        let vault = Vault::new(fs, VaultConfig::default());
         index.reconcile(&vault)?;
 
-        let mut search = SearchIndex::open_in_dir(&root.join(".onyx/tantivy"))?;
         let mut quick = QuickSwitcher::new();
         for record in index.all_notes()? {
             quick.upsert(record.id, &record.title, record.path.as_str(), &[]);
@@ -68,7 +133,21 @@ impl Engine {
             index,
             search,
             quick,
+            crypto,
             search_dirty: false,
+        })
+    }
+
+    pub fn is_encrypted_vault(&self) -> bool {
+        self.crypto.is_some()
+    }
+
+    /// Watcher path translator for encrypted vaults (`None` for plaintext).
+    pub fn path_translator(&self) -> Option<PathTranslator> {
+        self.crypto.as_ref().map(|crypto| {
+            let crypto = Arc::clone(crypto);
+            let translator: PathTranslator = Arc::new(move |sealed| crypto.open_path(sealed));
+            translator
         })
     }
 
@@ -330,6 +409,94 @@ mod tests {
         engine.commit_search_if_dirty().unwrap();
         assert_eq!(engine.index().note_count().unwrap(), 0);
         assert!(engine.search("findme-token", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn encrypted_vault_full_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create, write, verify everything works.
+        {
+            let mut engine = Engine::create_encrypted(dir.path(), "correct horse").unwrap();
+            assert!(engine.is_encrypted_vault());
+            engine
+                .write_note(
+                    &note("Secret Plans.md"),
+                    "# Plans\nclassified-token [[Other]]",
+                )
+                .unwrap();
+            engine.commit_search_if_dirty().unwrap();
+            assert_eq!(engine.search("classified-token", 5).unwrap().len(), 1);
+            assert_eq!(engine.quick().query("secret", 5).len(), 1);
+        }
+
+        // Nothing legible on disk: no plaintext names, no plaintext index.
+        let mut plaintext_leaks = Vec::new();
+        for entry in walk(dir.path()) {
+            let name = entry.to_string_lossy().to_lowercase();
+            if name.contains("secret") || name.contains("plans") {
+                plaintext_leaks.push(entry.clone());
+            }
+            if entry.is_file() {
+                let bytes = std::fs::read(&entry).unwrap();
+                assert!(
+                    !bytes
+                        .windows("classified-token".len())
+                        .any(|window| window == b"classified-token"),
+                    "plaintext content leaked into {entry:?}"
+                );
+            }
+        }
+        assert!(
+            plaintext_leaks.is_empty(),
+            "leaked names: {plaintext_leaks:?}"
+        );
+        assert!(!dir.path().join(".onyx/index.db").exists());
+        assert!(!dir.path().join(".onyx/tantivy").exists());
+
+        // Wrong passphrase fails; right one unlocks with content intact.
+        assert!(matches!(
+            Engine::open_encrypted(dir.path(), "wrong"),
+            Err(EngineError::WrongPassphrase)
+        ));
+        let engine = Engine::open_encrypted(dir.path(), "correct horse").unwrap();
+        assert_eq!(engine.index().note_count().unwrap(), 1);
+        assert_eq!(engine.search("classified-token", 5).unwrap().len(), 1);
+        assert_eq!(
+            engine.vault().read_text(&note("Secret Plans.md")).unwrap(),
+            "# Plans\nclassified-token [[Other]]"
+        );
+
+        // Plain open refuses and demands a passphrase.
+        assert!(matches!(
+            Engine::open(dir.path()),
+            Err(EngineError::PassphraseRequired)
+        ));
+    }
+
+    #[test]
+    fn create_encrypted_refuses_existing_encrypted_vault() {
+        let dir = tempfile::tempdir().unwrap();
+        let _first = Engine::create_encrypted(dir.path(), "pw").unwrap();
+        assert!(matches!(
+            Engine::create_encrypted(dir.path(), "other"),
+            Err(EngineError::VaultExists)
+        ));
+    }
+
+    fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path.clone());
+                }
+                files.push(path);
+            }
+        }
+        files
     }
 
     #[test]

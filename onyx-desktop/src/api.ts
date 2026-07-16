@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export interface VaultInfo {
   root: string;
   noteCount: number;
+  encrypted: boolean;
 }
 
 export interface NoteInfo {
@@ -54,7 +55,12 @@ export interface ObsidianImport {
 }
 
 export const api = {
-  openVault: (path: string) => invoke<VaultInfo>("open_vault", { path }),
+  vaultStatus: (path: string) => invoke<string>("vault_status", { path }),
+  openVault: (path: string, passphrase?: string) =>
+    invoke<VaultInfo>("open_vault", { path, passphrase: passphrase ?? null }),
+  createEncryptedVault: (path: string, passphrase: string) =>
+    invoke<VaultInfo>("create_encrypted_vault", { path, passphrase }),
+  lockVault: () => invoke<void>("lock_vault"),
   listNotes: () => invoke<NoteInfo[]>("list_notes"),
   readNote: (path: string) => invoke<string>("read_note", { path }),
   writeNote: (path: string, content: string) =>

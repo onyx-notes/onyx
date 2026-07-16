@@ -24,6 +24,7 @@ fn parse_path(path: &str) -> CmdResult<NotePath> {
 pub struct VaultInfo {
     pub root: String,
     pub note_count: usize,
+    pub encrypted: bool,
 }
 
 #[derive(Serialize)]
@@ -49,25 +50,78 @@ pub struct TagInfo {
     pub count: u64,
 }
 
+/// Probe a directory before opening: does it need a passphrase?
+#[tauri::command]
+pub fn vault_status(path: String) -> CmdResult<String> {
+    let root = std::path::PathBuf::from(&path);
+    if !root.is_dir() {
+        return Ok("missing".into());
+    }
+    Ok(if crate::engine::is_encrypted(&root) {
+        "encrypted".into()
+    } else {
+        "plain".into()
+    })
+}
+
 #[tauri::command]
 pub async fn open_vault(
     app: AppHandle,
     state: State<'_, AppState>,
     path: String,
+    passphrase: Option<String>,
 ) -> CmdResult<VaultInfo> {
     let root = std::path::PathBuf::from(&path);
     if !root.is_dir() {
         return Err(format!("not a directory: {path}"));
     }
-    let engine = Engine::open(&root).map_err(err)?;
+    let engine = match passphrase {
+        Some(passphrase) => Engine::open_encrypted(&root, &passphrase).map_err(err)?,
+        None => Engine::open(&root).map_err(err)?,
+    };
+    install_engine(&app, &state, &root, path, engine)
+}
+
+/// Create a brand-new encrypted vault and open it.
+#[tauri::command]
+pub async fn create_encrypted_vault(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    passphrase: String,
+) -> CmdResult<VaultInfo> {
+    if passphrase.len() < 8 {
+        return Err("passphrase must be at least 8 characters".into());
+    }
+    let root = std::path::PathBuf::from(&path);
+    std::fs::create_dir_all(&root).map_err(err)?;
+    let engine = Engine::create_encrypted(&root, &passphrase).map_err(err)?;
+    install_engine(&app, &state, &root, path, engine)
+}
+
+/// Lock/close the current vault (keys zeroize on drop).
+#[tauri::command]
+pub fn lock_vault(state: State<'_, AppState>) {
+    state.lock_vault();
+}
+
+fn install_engine(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    root: &std::path::Path,
+    path: String,
+    engine: Engine,
+) -> CmdResult<VaultInfo> {
     let note_count = engine.index().note_count().map_err(err)?;
+    let encrypted = engine.is_encrypted_vault();
 
     *state.engine.lock() = Some(engine);
-    spawn_watcher(&app, &state, &root).map_err(err)?;
+    spawn_watcher(app, state, root).map_err(err)?;
 
     Ok(VaultInfo {
         root: path,
         note_count,
+        encrypted,
     })
 }
 

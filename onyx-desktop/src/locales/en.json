@@ -38,5 +38,13 @@
   "daily.open": "Open today's daily note",
   "note.created": "Created {path}",
   "error.generic": "Something went wrong: {message}",
-  "status.words": "{count} words"
+  "status.words": "{count} words",
+  "vault.passphrasePrompt": "This vault is encrypted. Enter the passphrase:",
+  "vault.createEncrypted": "New encrypted vault",
+  "vault.createEncryptedPrompt": "Path for the new encrypted vault folder:",
+  "vault.newPassphrasePrompt": "Choose a passphrase (min 8 characters). There is NO recovery if you lose it:",
+  "vault.confirmPassphrasePrompt": "Confirm the passphrase:",
+  "vault.passphraseMismatch": "Passphrases did not match",
+  "vault.lock": "Lock vault",
+  "vault.locked": "Vault locked"
 }

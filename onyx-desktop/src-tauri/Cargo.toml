@@ -18,6 +18,7 @@ tauri-build = { workspace = true }
 [dependencies]
 crossbeam-channel = { workspace = true }
 onyx-core = { workspace = true }
+onyx-crypto = { workspace = true }
 onyx-md = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }

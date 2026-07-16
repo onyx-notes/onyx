@@ -118,17 +118,61 @@ export default function App() {
     }
   };
 
+  const [vaultEncrypted, setVaultEncrypted] = createSignal(false);
+
+  const finishOpen = async (info: Awaited<ReturnType<typeof api.openVault>>) => {
+    setVaultRoot(info.root);
+    setVaultEncrypted(info.encrypted);
+    const loaded = await api.getSettings();
+    setSettings(loaded);
+    applySettings(loaded);
+    await refreshNotes();
+    setStatus(t("vault.noteCount", { count: info.noteCount }));
+  };
+
   const openVault = async () => {
     const path = window.prompt(t("vault.openPrompt"));
     if (!path) return;
     try {
-      const info = await api.openVault(path);
-      setVaultRoot(info.root);
-      const loaded = await api.getSettings();
-      setSettings(loaded);
-      applySettings(loaded);
-      await refreshNotes();
-      setStatus(t("vault.noteCount", { count: info.noteCount }));
+      const status = await api.vaultStatus(path);
+      if (status === "encrypted") {
+        const passphrase = window.prompt(t("vault.passphrasePrompt"));
+        if (!passphrase) return;
+        await finishOpen(await api.openVault(path, passphrase));
+      } else {
+        await finishOpen(await api.openVault(path));
+      }
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const createEncryptedVault = async () => {
+    const path = window.prompt(t("vault.createEncryptedPrompt"));
+    if (!path) return;
+    const passphrase = window.prompt(t("vault.newPassphrasePrompt"));
+    if (!passphrase) return;
+    const confirmed = window.prompt(t("vault.confirmPassphrasePrompt"));
+    if (confirmed !== passphrase) {
+      setStatus(t("vault.passphraseMismatch"));
+      return;
+    }
+    try {
+      await finishOpen(await api.createEncryptedVault(path, passphrase));
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const lockVault = async () => {
+    try {
+      await api.lockVault();
+      setVaultRoot(null);
+      setVaultEncrypted(false);
+      setNotes([]);
+      workspace.evictPath(activePath() ?? "");
+      workspace.closeTab(workspace.state.active);
+      setStatus(t("vault.locked"));
     } catch (error) {
       report(error);
     }
@@ -239,9 +283,14 @@ export default function App() {
           <Show
             when={vaultRoot()}
             fallback={
-              <button class="file-item" onClick={openVault}>
-                {t("vault.open")}
-              </button>
+              <>
+                <button class="file-item" onClick={openVault}>
+                  {t("vault.open")}
+                </button>
+                <button class="file-item" onClick={() => void createEncryptedVault()}>
+                  {t("vault.createEncrypted")}
+                </button>
+              </>
             }
           >
             <For each={notes()}>
@@ -296,6 +345,11 @@ export default function App() {
             <Show when={vaultRoot()}>
               <button onClick={() => void openDailyNote()} title={t("daily.open")}>
                 ☀
+              </button>
+            </Show>
+            <Show when={vaultEncrypted()}>
+              <button onClick={() => void lockVault()} title={t("vault.lock")}>
+                🔒
               </button>
             </Show>
             <button onClick={() => workspace.toggleVertical()} title={t("tabs.vertical")}>

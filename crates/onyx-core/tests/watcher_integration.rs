@@ -148,3 +148,54 @@ fn watcher_shutdown_is_clean() {
     let watcher = VaultWatcher::spawn(dir.path(), test_config(), sender).unwrap();
     drop(watcher); // must not hang or panic
 }
+
+#[test]
+fn encrypted_vault_events_arrive_with_plaintext_paths() {
+    use std::sync::Arc;
+
+    use onyx_core::{CryptoFs, RealFs, VaultFs};
+    use onyx_crypto::VaultKey;
+
+    let dir = tempfile::tempdir().unwrap();
+    let key = VaultKey::from_bytes([9; 32]);
+    let crypto = Arc::new(CryptoFs::new(
+        Arc::new(RealFs::new(dir.path())),
+        key.clone(),
+    ));
+
+    let (sender, receiver) = crossbeam_channel::unbounded();
+    let translator: onyx_core::PathTranslator = {
+        let crypto = Arc::clone(&crypto);
+        Arc::new(move |sealed| crypto.open_path(sealed))
+    };
+    let _watcher = onyx_core::VaultWatcher::spawn_translated(
+        dir.path(),
+        test_config(),
+        sender,
+        Some(translator),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Write through the encrypted fs: on disk this is an opaque token file,
+    // but the event must carry the plaintext vault path.
+    crypto
+        .write_atomic(&NotePath::new("Secret Note.md").unwrap(), b"content")
+        .unwrap();
+
+    expect_event(
+        &receiver,
+        "translated Created",
+        |event| matches!(event, VaultEvent::Created(path) if path.as_str() == "Secret Note.md"),
+    );
+
+    // A foreign plaintext file dropped into the directory produces no event.
+    std::fs::write(dir.path().join("stray.txt"), "not ours").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    while let Ok(event) = receiver.try_recv() {
+        assert!(
+            event.path().map(|p| p.as_str()) != Some("stray.txt"),
+            "foreign file must not produce a vault event: {event:?}"
+        );
+    }
+}
