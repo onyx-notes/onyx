@@ -6,22 +6,29 @@ import { For } from "solid-js";
 import { t } from "../i18n";
 import { type Workspace, tabTitle } from "../workspace";
 
-export default function TabBar(props: { workspace: Workspace }) {
-  const { state, setActive, closeTab, newTab } = props.workspace;
+export default function TabBar(props: { workspace: Workspace; paneIndex: number }) {
+  const { state, focusPane, setActive, closeTab, newTab, splitRight } = props.workspace;
+  const pane = () => state.panes[props.paneIndex];
+  const isActivePane = () => props.paneIndex === state.activePane;
+
+  const act = (fn: () => void) => {
+    focusPane(props.paneIndex);
+    fn();
+  };
 
   return (
     <div class="tabbar" classList={{ vertical: state.vertical }}>
-      <For each={state.tabs}>
+      <For each={pane()?.tabs ?? []}>
         {(tab, index) => (
           <div
             class="tab"
-            classList={{ active: index() === state.active }}
+            classList={{ active: index() === pane()?.active && isActivePane() }}
             onMouseDown={(event) => {
               if (event.button === 1) {
                 event.preventDefault();
-                closeTab(index());
+                act(() => closeTab(index()));
               } else if (event.button === 0) {
-                setActive(index());
+                act(() => setActive(index()));
               }
             }}
             title={tab.path ?? ""}
@@ -30,7 +37,7 @@ export default function TabBar(props: { workspace: Workspace }) {
             <button
               class="tab-close"
               onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => closeTab(index())}
+              onClick={() => act(() => closeTab(index()))}
               aria-label={t("tabs.close")}
             >
               ×
@@ -38,8 +45,16 @@ export default function TabBar(props: { workspace: Workspace }) {
           </div>
         )}
       </For>
-      <button class="tab-new" onClick={newTab} aria-label={t("tabs.new")}>
+      <button class="tab-new" onClick={() => act(newTab)} aria-label={t("tabs.new")}>
         +
+      </button>
+      <button
+        class="tab-new"
+        onClick={() => act(splitRight)}
+        aria-label={t("tabs.split")}
+        title={t("tabs.split")}
+      >
+        ⊞
       </button>
     </div>
   );

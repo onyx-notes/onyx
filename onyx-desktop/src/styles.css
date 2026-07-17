@@ -814,3 +814,28 @@ body.full-width .reading-view { max-width: none; }
   font-family: var(--onyx-font-mono);
   white-space: pre-wrap;
 }
+
+/* ---- panes (splits) ---- */
+
+.panes { flex: 1; display: flex; min-height: 0; }
+
+.pane {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--onyx-border);
+}
+
+.pane:last-child { border-right: none; }
+.app.vertical-tabs .pane { flex-direction: row; }
+
+.pane-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pane-active .tabbar { background: var(--onyx-bg-tertiary); }

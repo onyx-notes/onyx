@@ -8,14 +8,12 @@ import { type NoteInfo, type Settings, api } from "./api";
 import ChatPanel from "./components/ChatPanel";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import { PluginHost, type PluginCommand } from "./plugins/host";
-import Editor from "./components/Editor";
 import GraphView from "./components/GraphView";
 import Insights from "./components/Insights";
+import Pane from "./components/Pane";
 import QuickSwitcher from "./components/QuickSwitcher";
-import ReadingView from "./components/ReadingView";
 import RightPanel from "./components/RightPanel";
 import SettingsModal from "./components/SettingsModal";
-import TabBar from "./components/TabBar";
 import { t } from "./i18n";
 import { createWorkspace } from "./workspace";
 
@@ -119,15 +117,18 @@ export default function App() {
     }
   };
 
-  // Whatever the active tab points at, that's what the editor shows.
+  // Track the active note's content for the status-bar word count. Panes
+  // own their own editor content; this is a lightweight mirror.
   createEffect(
     on(activePath, async (path) => {
-      if (path === null) return;
+      if (path === null) {
+        setContent("");
+        return;
+      }
       try {
         setContent(await api.readNote(path));
-        setReloadSignal((n) => n + 1);
-      } catch (error) {
-        report(error);
+      } catch {
+        setContent("");
       }
     }),
   );
@@ -141,9 +142,7 @@ export default function App() {
     setQuickOpen(false);
   };
 
-  const saveNote = async (body: string) => {
-    const path = activePath();
-    if (path === null) return;
+  const saveNote = async (path: string, body: string) => {
     try {
       setContent(body);
       await api.writeNote(path, body);
@@ -226,7 +225,7 @@ export default function App() {
       setVaultEncrypted(false);
       setNotes([]);
       workspace.evictPath(activePath() ?? "");
-      workspace.closeTab(workspace.state.active);
+      workspace.closeTab(workspace.pane()?.active ?? 0);
       setStatus(t("vault.locked"));
     } catch (error) {
       report(error);
@@ -269,12 +268,15 @@ export default function App() {
   onMount(async () => {
     const unlisten = await api.onVaultEvent(async (event) => {
       await refreshNotes();
-      if (event.kind === "modified" && event.path === activePath()) {
-        try {
-          setContent(await api.readNote(event.path));
-          setReloadSignal((n) => n + 1);
-        } catch {
-          // Vanished between event and read; the list refresh handles it.
+      if (event.kind === "modified") {
+        // Panes showing this note re-read via the reload bump.
+        setReloadSignal((n) => n + 1);
+        if (event.path === activePath()) {
+          try {
+            setContent(await api.readNote(event.path));
+          } catch {
+            // Vanished between event and read; list refresh handles it.
+          }
         }
       }
       if (event.kind === "removed") {
@@ -303,7 +305,10 @@ export default function App() {
         workspace.newTab();
       } else if (mod && key === "w") {
         event.preventDefault();
-        workspace.closeTab(workspace.state.active);
+        workspace.closeTab(workspace.pane()?.active ?? 0);
+      } else if (mod && key === "\\") {
+        event.preventDefault();
+        workspace.splitRight();
       } else if (mod && event.key === "Tab") {
         event.preventDefault();
         workspace.cycleTab(event.shiftKey ? -1 : 1);
@@ -390,38 +395,27 @@ export default function App() {
       </aside>
 
       <div class="workspace">
-        <TabBar workspace={workspace} />
-        <main class="main">
+        <div class="panes">
           <Show
-            when={activePath()}
-            fallback={
-              <div class="empty-state">
-                {vaultRoot() ? t("editor.placeholder") : t("vault.empty")}
-              </div>
-            }
+            when={vaultRoot()}
+            fallback={<div class="empty-state">{t("vault.empty")}</div>}
           >
-            {(path) => (
-              <Show
-                when={!readingMode()}
-                fallback={
-                  <ReadingView
-                    path={path()}
-                    reloadSignal={reloadSignal()}
-                    onFollowLink={(target) => void followLink(target)}
-                  />
-                }
-              >
-                <Editor
-                  path={path()}
-                  content={content()}
-                  reloadSignal={reloadSignal()}
-                  onChange={(body) => void saveNote(body)}
-                  onFollowLink={(target) => void followLink(target)}
+            <For each={workspace.state.panes}>
+              {(_pane, index) => (
+                <Pane
+                  workspace={workspace}
+                  paneIndex={index()}
+                  reading={readingMode()}
+                  externalReload={reloadSignal()}
                   scrollTarget={scrollTarget()}
+                  onFollowLink={(target) => void followLink(target)}
+                  onSave={(path, body) => void saveNote(path, body)}
                 />
-              </Show>
-            )}
+              )}
+            </For>
           </Show>
+        </div>
+        <main class="main">
           <div class="statusbar">
             <span>{activePath() ?? ""}</span>
             <Show when={activePath()}>

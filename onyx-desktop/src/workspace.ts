@@ -1,7 +1,7 @@
-// Workspace state: tabs with browser-like per-tab history. The recursive
-// split tree from the plan layers on top of this later; tabs are the
-// foundation and their semantics (history, MRU, background open) are what
-// users feel every minute.
+// Workspace state: a row of panes, each a tab group with browser-like
+// per-tab history. One level of horizontal splitting — the most-used
+// arrangement (edit here, reference there) — kept deliberately flat rather
+// than a recursive tree; the operation surface stays small and testable.
 
 import { createStore, produce } from "solid-js/store";
 
@@ -13,122 +13,172 @@ export interface Tab {
   historyIndex: number;
 }
 
-export interface WorkspaceState {
+export interface Pane {
+  id: number;
   tabs: Tab[];
   active: number;
+}
+
+export interface WorkspaceState {
+  panes: Pane[];
+  activePane: number;
   vertical: boolean;
 }
 
-let nextTabId = 1;
+let nextId = 1;
 
 function emptyTab(): Tab {
-  return { id: nextTabId++, path: null, history: [], historyIndex: -1 };
+  return { id: nextId++, path: null, history: [], historyIndex: -1 };
+}
+
+function pathTab(path: string): Tab {
+  return { id: nextId++, path, history: [path], historyIndex: 0 };
+}
+
+function newPane(tabs: Tab[]): Pane {
+  return { id: nextId++, tabs, active: 0 };
 }
 
 export function createWorkspace() {
   const [state, setState] = createStore<WorkspaceState>({
-    tabs: [emptyTab()],
-    active: 0,
+    panes: [newPane([emptyTab()])],
+    activePane: 0,
     vertical: false,
   });
 
-  const activeTab = (): Tab | undefined => state.tabs[state.active];
+  const pane = (): Pane | undefined => state.panes[state.activePane];
+  const activeTab = (): Tab | undefined => {
+    const current = pane();
+    return current?.tabs[current.active];
+  };
   const activePath = (): string | null => activeTab()?.path ?? null;
 
-  /** Navigate the active tab to `path`, pushing history. */
-  const openInActive = (path: string) => {
+  /** Run a mutation against the active pane. */
+  const withPane = (mutate: (pane: Pane) => void) =>
     setState(
       produce((workspace) => {
-        const tab = workspace.tabs[workspace.active];
-        if (!tab || tab.path === path) return;
-        // A new navigation truncates any forward history (browser rule).
-        tab.history = tab.history.slice(0, tab.historyIndex + 1);
-        tab.history.push(path);
-        tab.historyIndex = tab.history.length - 1;
-        tab.path = path;
+        const current = workspace.panes[workspace.activePane];
+        if (current) mutate(current);
       }),
     );
-  };
 
-  const openInNewTab = (path: string, background = false) => {
+  const openInActive = (path: string) =>
+    withPane((current) => {
+      const tab = current.tabs[current.active];
+      if (!tab || tab.path === path) return;
+      tab.history = tab.history.slice(0, tab.historyIndex + 1);
+      tab.history.push(path);
+      tab.historyIndex = tab.history.length - 1;
+      tab.path = path;
+    });
+
+  const openInNewTab = (path: string, background = false) =>
+    withPane((current) => {
+      current.tabs.push(pathTab(path));
+      if (!background) current.active = current.tabs.length - 1;
+    });
+
+  const newTab = () =>
+    withPane((current) => {
+      current.tabs.push(emptyTab());
+      current.active = current.tabs.length - 1;
+    });
+
+  const closeTab = (index: number) =>
     setState(
       produce((workspace) => {
-        const tab = emptyTab();
-        tab.path = path;
-        tab.history = [path];
-        tab.historyIndex = 0;
-        workspace.tabs.push(tab);
-        if (!background) workspace.active = workspace.tabs.length - 1;
-      }),
-    );
-  };
-
-  const newTab = () => {
-    setState(
-      produce((workspace) => {
-        workspace.tabs.push(emptyTab());
-        workspace.active = workspace.tabs.length - 1;
-      }),
-    );
-  };
-
-  const closeTab = (index: number) => {
-    setState(
-      produce((workspace) => {
-        if (workspace.tabs.length === 1) {
-          // Last tab never closes; it resets (app always has a workspace).
-          workspace.tabs = [emptyTab()];
-          workspace.active = 0;
+        const current = workspace.panes[workspace.activePane];
+        if (!current) return;
+        if (current.tabs.length === 1) {
+          // Closing a pane's last tab closes the pane — unless it's the
+          // only pane, which resets instead (app always has a workspace).
+          if (workspace.panes.length === 1) {
+            current.tabs = [emptyTab()];
+            current.active = 0;
+          } else {
+            workspace.panes.splice(workspace.activePane, 1);
+            workspace.activePane = Math.min(
+              workspace.activePane,
+              workspace.panes.length - 1,
+            );
+          }
           return;
         }
-        workspace.tabs.splice(index, 1);
-        if (workspace.active >= workspace.tabs.length) {
-          workspace.active = workspace.tabs.length - 1;
-        } else if (index < workspace.active) {
-          workspace.active -= 1;
+        current.tabs.splice(index, 1);
+        if (current.active >= current.tabs.length) {
+          current.active = current.tabs.length - 1;
+        } else if (index < current.active) {
+          current.active -= 1;
         }
       }),
     );
-  };
 
-  const setActive = (index: number) => {
-    if (index >= 0 && index < state.tabs.length) setState("active", index);
-  };
+  const setActive = (index: number) =>
+    withPane((current) => {
+      if (index >= 0 && index < current.tabs.length) current.active = index;
+    });
 
-  const cycleTab = (delta: number) => {
-    const count = state.tabs.length;
-    setState("active", (state.active + delta + count) % count);
-  };
+  const cycleTab = (delta: number) =>
+    withPane((current) => {
+      const count = current.tabs.length;
+      current.active = (current.active + delta + count) % count;
+    });
 
-  /** Browser-style history navigation on the active tab. */
-  const navigate = (delta: number) => {
+  const navigate = (delta: number) =>
+    withPane((current) => {
+      const tab = current.tabs[current.active];
+      if (!tab) return;
+      const target = tab.historyIndex + delta;
+      if (target < 0 || target >= tab.history.length) return;
+      tab.historyIndex = target;
+      tab.path = tab.history[target] ?? null;
+    });
+
+  /** Move the active tab into a new pane to the right (or open an empty
+   * pane if this pane has only one tab). */
+  const splitRight = () =>
     setState(
       produce((workspace) => {
-        const tab = workspace.tabs[workspace.active];
-        if (!tab) return;
-        const target = tab.historyIndex + delta;
-        if (target < 0 || target >= tab.history.length) return;
-        tab.historyIndex = target;
-        tab.path = tab.history[target] ?? null;
+        const current = workspace.panes[workspace.activePane];
+        if (!current) return;
+        const moved =
+          current.tabs.length > 1
+            ? current.tabs.splice(current.active, 1)[0]!
+            : emptyTab();
+        if (current.tabs.length > 0 && current.active >= current.tabs.length) {
+          current.active = current.tabs.length - 1;
+        }
+        workspace.panes.splice(workspace.activePane + 1, 0, newPane([moved]));
+        workspace.activePane += 1;
       }),
     );
+
+  const focusPane = (index: number) => {
+    if (index >= 0 && index < state.panes.length) setState("activePane", index);
   };
 
-  /** A note was deleted/renamed away: point affected tabs at nothing. */
-  const evictPath = (path: string) => {
+  const cyclePane = (delta: number) => {
+    const count = state.panes.length;
+    setState("activePane", (state.activePane + delta + count) % count);
+  };
+
+  /** A note was deleted/renamed away: point every affected tab at nothing. */
+  const evictPath = (path: string) =>
     setState(
       produce((workspace) => {
-        for (const tab of workspace.tabs) {
-          if (tab.path === path) tab.path = null;
+        for (const current of workspace.panes) {
+          for (const tab of current.tabs) {
+            if (tab.path === path) tab.path = null;
+          }
         }
       }),
     );
-  };
 
   const toggleVertical = () => setState("vertical", (value) => !value);
 
   return {
     state,
+    pane,
     activeTab,
     activePath,
     openInActive,
@@ -138,6 +188,9 @@ export function createWorkspace() {
     setActive,
     cycleTab,
     navigate,
+    splitRight,
+    focusPane,
+    cyclePane,
     evictPath,
     toggleVertical,
   };

@@ -96,5 +96,6 @@
   "pair.confirmSas": "Verification code: {sas}. Press 'Codes match' ONLY if the other screen shows the same.",
   "pair.sasMatches": "Codes match — apply",
   "pair.done": "Paired. Sync is starting.",
-  "reading.toggle": "Toggle reading view"
+  "reading.toggle": "Toggle reading view",
+  "tabs.split": "Split right"
 }
