@@ -76,6 +76,43 @@ export interface BackupConfig {
   autoIntervalHours: number;
 }
 
+export interface AiConfig {
+  provider: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AiLogEntry {
+  atEpochSecs: number;
+  endpoint: string;
+  model: string;
+  requestBody: string;
+  responseChars: number;
+}
+
+export interface VaultStats {
+  noteCount: number;
+  attachmentCount: number;
+  totalWords: number;
+  linkCount: number;
+  orphanCount: number;
+  unresolvedCount: number;
+  mostLinked: { path: string; count: number }[];
+  topTags: { tag: string; count: number }[];
+  longestNotes: { path: string; count: number }[];
+}
+
+export interface GraphPayload {
+  nodes: { path: string; title: string; degree: number }[];
+  edges: [number, number][];
+}
+
 export interface PluginInfo {
   id: string;
   name: string;
@@ -135,6 +172,13 @@ export const api = {
   listBackupSnapshots: (destination: string) =>
     invoke<number[]>("list_backup_snapshots", { destination }),
   listPlugins: () => invoke<PluginInfo[]>("list_plugins"),
+  vaultStats: () => invoke<VaultStats>("vault_stats"),
+  graphPayload: () => invoke<GraphPayload>("graph_payload"),
+  getAiConfig: () => invoke<AiConfig>("get_ai_config"),
+  setAiConfig: (config: AiConfig) => invoke<void>("set_ai_config", { config }),
+  aiChat: (messages: ChatMessage[], contextPath: string | null) =>
+    invoke<string>("ai_chat", { messages, contextPath }),
+  aiRequestLog: () => invoke<AiLogEntry[]>("ai_request_log"),
   setPluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_plugin_enabled", { id, enabled }),
 

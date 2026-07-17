@@ -39,6 +39,8 @@ pub struct AppState {
     pub sync_status: Arc<Mutex<SyncStatusInfo>>,
     /// Dropping the sender stops the auto-backup timer.
     backup_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
+    /// AI request log — the "see exactly what left your machine" surface.
+    pub ai_log: Arc<crate::ai::AiLog>,
 }
 
 impl AppState {

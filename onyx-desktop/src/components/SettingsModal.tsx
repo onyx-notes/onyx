@@ -4,7 +4,7 @@
 
 import { For, Show, createResource, createSignal } from "solid-js";
 
-import { type Settings, api } from "../api";
+import { type AiConfig, type Settings, api } from "../api";
 import { t } from "../i18n";
 
 export default function SettingsModal(props: {
@@ -20,6 +20,17 @@ export default function SettingsModal(props: {
   const [backupResult, setBackupResult] = createSignal<string | null>(null);
   const [backupConfig] = createResource(() => api.getBackupConfig());
   const [plugins, { refetch: refetchPlugins }] = createResource(() => api.listPlugins());
+  const [aiDraft, setAiDraft] = createSignal<AiConfig | null>(null);
+  void api.getAiConfig().then(setAiDraft);
+  const [aiSaved, setAiSaved] = createSignal(false);
+  const updateAi = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) =>
+    setAiDraft((current) => (current ? { ...current, [key]: value } : current));
+  const saveAi = async () => {
+    const draft = aiDraft();
+    if (!draft) return;
+    await api.setAiConfig(draft);
+    setAiSaved(true);
+  };
 
   const togglePlugin = async (id: string, enabled: boolean) => {
     await api.setPluginEnabled(id, enabled);
@@ -164,6 +175,56 @@ export default function SettingsModal(props: {
             </div>
             <Show when={syncResult()}>
               {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+          </div>
+
+          <div class="settings-import">
+            <Show when={aiDraft()}>
+              {(ai) => (
+                <>
+                  <div class="settings-row">
+                    <span>{t("ai.provider")}</span>
+                    <select
+                      value={ai().provider}
+                      onChange={(event) => updateAi("provider", event.currentTarget.value)}
+                    >
+                      <option value="openai">{t("ai.provider.openai")}</option>
+                      <option value="anthropic">Anthropic</option>
+                    </select>
+                  </div>
+                  <div class="settings-row">
+                    <span>{t("ai.baseUrl")}</span>
+                    <input
+                      type="text"
+                      placeholder="https://api.openai.com/v1"
+                      value={ai().baseUrl}
+                      onInput={(event) => updateAi("baseUrl", event.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="settings-row">
+                    <span>{t("ai.apiKey")}</span>
+                    <input
+                      type="password"
+                      value={ai().apiKey}
+                      onInput={(event) => updateAi("apiKey", event.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="settings-row">
+                    <span>{t("ai.model")}</span>
+                    <input
+                      type="text"
+                      value={ai().model}
+                      onInput={(event) => updateAi("model", event.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="settings-row">
+                    <span class="settings-caps">{t("ai.storageNote")}</span>
+                    <button class="settings-button" onClick={() => void saveAi()}>
+                      {aiSaved() ? t("ai.saved") : t("ai.save")}
+                    </button>
+                  </div>
+                </>
+              )}
             </Show>
           </div>
 

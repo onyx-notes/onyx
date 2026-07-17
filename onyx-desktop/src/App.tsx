@@ -5,9 +5,12 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type NoteInfo, type Settings, api } from "./api";
+import ChatPanel from "./components/ChatPanel";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import { PluginHost, type PluginCommand } from "./plugins/host";
 import Editor from "./components/Editor";
+import GraphView from "./components/GraphView";
+import Insights from "./components/Insights";
 import QuickSwitcher from "./components/QuickSwitcher";
 import RightPanel from "./components/RightPanel";
 import SettingsModal from "./components/SettingsModal";
@@ -54,6 +57,9 @@ export default function App() {
   const [status, setStatus] = createSignal("");
   const [syncState, setSyncState] = createSignal<string | null>(null);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
+  const [graphOpen, setGraphOpen] = createSignal(false);
+  const [insightsOpen, setInsightsOpen] = createSignal(false);
+  const [chatOpen, setChatOpen] = createSignal(false);
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
   const pluginHost = new PluginHost({
@@ -81,6 +87,9 @@ export default function App() {
       name: t("tabs.vertical"),
       run: () => workspace.toggleVertical(),
     },
+    { id: "app.graph", name: t("graph.title"), run: () => setGraphOpen(true) },
+    { id: "app.chat", name: t("chat.title"), run: () => setChatOpen(true) },
+    { id: "app.insights", name: t("insights.title"), run: () => setInsightsOpen(true) },
     { id: "app.lock", name: t("vault.lock"), run: () => void lockVault() },
     ...pluginCommands().map((command) => ({
       id: `${command.pluginId}:${command.commandId}`,
@@ -276,6 +285,9 @@ export default function App() {
       } else if (mod && key === "p") {
         event.preventDefault();
         if (vaultRoot() !== null) setQuickOpen(true);
+      } else if (mod && key === "g") {
+        event.preventDefault();
+        if (vaultRoot() !== null) setGraphOpen((value) => !value);
       } else if (mod && key === "t") {
         event.preventDefault();
         workspace.newTab();
@@ -466,6 +478,18 @@ export default function App() {
           commands={paletteCommands()}
           onClose={() => setPaletteOpen(false)}
         />
+      </Show>
+
+      <Show when={graphOpen()}>
+        <GraphView onOpen={(path) => openNote(path)} onClose={() => setGraphOpen(false)} />
+      </Show>
+
+      <Show when={insightsOpen()}>
+        <Insights onOpen={(path) => openNote(path)} onClose={() => setInsightsOpen(false)} />
+      </Show>
+
+      <Show when={chatOpen()}>
+        <ChatPanel contextPath={activePath()} onClose={() => setChatOpen(false)} />
       </Show>
     </div>
   );

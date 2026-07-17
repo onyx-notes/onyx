@@ -639,3 +639,200 @@ pub fn set_plugin_enabled(state: State<'_, AppState>, id: String, enabled: bool)
             .map_err(err)
     })
 }
+
+// ---------------------------------------------------------------------------
+// Vault Insights
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultStats {
+    pub note_count: usize,
+    pub attachment_count: usize,
+    pub total_words: u64,
+    pub link_count: usize,
+    pub orphan_count: usize,
+    pub unresolved_count: usize,
+    pub most_linked: Vec<LinkedNote>,
+    pub top_tags: Vec<TagInfo>,
+    pub longest_notes: Vec<LinkedNote>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedNote {
+    pub path: String,
+    pub count: u64,
+}
+
+/// All-local analytics: computed from the index + link graph, nothing ever
+/// leaves the machine.
+#[tauri::command]
+pub fn vault_stats(state: State<'_, AppState>) -> CmdResult<VaultStats> {
+    state.with_engine(|engine| {
+        let records = engine.index().all_notes().map_err(err)?;
+        let graph = onyx_core::LinkGraph::build(engine.index()).map_err(err)?;
+
+        let by_id: std::collections::HashMap<_, _> =
+            records.iter().map(|record| (record.id, record)).collect();
+        let path_of = |id: onyx_core::NoteId| {
+            by_id
+                .get(&id)
+                .map(|record| record.path.as_str().to_owned())
+                .unwrap_or_default()
+        };
+
+        let note_count = records.iter().filter(|record| record.is_markdown).count();
+        let mut longest: Vec<LinkedNote> = records
+            .iter()
+            .filter(|record| record.is_markdown)
+            .map(|record| LinkedNote {
+                path: record.path.as_str().to_owned(),
+                count: record.word_count.unwrap_or(0),
+            })
+            .collect();
+        longest.sort_by(|a, b| b.count.cmp(&a.count));
+        longest.truncate(5);
+
+        Ok(VaultStats {
+            note_count,
+            attachment_count: records.len() - note_count,
+            total_words: records.iter().filter_map(|record| record.word_count).sum(),
+            link_count: graph.edge_count(),
+            orphan_count: graph.orphans().len(),
+            unresolved_count: engine.index().unresolved_targets().map_err(err)?.len(),
+            most_linked: graph
+                .most_linked(5)
+                .into_iter()
+                .map(|(id, count)| LinkedNote {
+                    path: path_of(id),
+                    count: count as u64,
+                })
+                .collect(),
+            top_tags: engine
+                .index()
+                .tags()
+                .map_err(err)?
+                .into_iter()
+                .take(8)
+                .map(|tag| TagInfo {
+                    tag: tag.tag,
+                    count: tag.count,
+                })
+                .collect(),
+            longest_notes: longest,
+        })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Graph view data
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphPayload {
+    pub nodes: Vec<GraphNodeInfo>,
+    /// Edges as index pairs into `nodes`.
+    pub edges: Vec<[u32; 2]>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNodeInfo {
+    pub path: String,
+    pub title: String,
+    pub degree: u32,
+}
+
+#[tauri::command]
+pub fn graph_payload(state: State<'_, AppState>) -> CmdResult<GraphPayload> {
+    state.with_engine(|engine| {
+        let records = engine.index().all_notes().map_err(err)?;
+        let graph = onyx_core::LinkGraph::build(engine.index()).map_err(err)?;
+
+        let mut position_of = std::collections::HashMap::new();
+        let mut nodes = Vec::with_capacity(records.len());
+        for record in &records {
+            if !record.is_markdown {
+                continue;
+            }
+            position_of.insert(record.id, nodes.len() as u32);
+            nodes.push(GraphNodeInfo {
+                path: record.path.as_str().to_owned(),
+                title: record.title.clone(),
+                degree: 0,
+            });
+        }
+
+        let mut edges = Vec::new();
+        for record in &records {
+            let Some(&source) = position_of.get(&record.id) else {
+                continue;
+            };
+            for target_id in graph.outgoing(record.id) {
+                if let Some(&target) = position_of.get(&target_id) {
+                    edges.push([source, target]);
+                    nodes[source as usize].degree += 1;
+                    nodes[target as usize].degree += 1;
+                }
+            }
+        }
+        Ok(GraphPayload { nodes, edges })
+    })
+}
+
+// ---------------------------------------------------------------------------
+// AI commands
+// ---------------------------------------------------------------------------
+
+fn app_data(app: &AppHandle) -> CmdResult<std::path::PathBuf> {
+    app.path().app_data_dir().map_err(err)
+}
+
+#[tauri::command]
+pub fn get_ai_config(app: AppHandle) -> CmdResult<crate::ai::AiConfig> {
+    Ok(crate::ai::load_config(&app_data(&app)?))
+}
+
+#[tauri::command]
+pub fn set_ai_config(app: AppHandle, config: crate::ai::AiConfig) -> CmdResult<()> {
+    crate::ai::save_config(&app_data(&app)?, &config)
+}
+
+#[tauri::command]
+pub fn ai_request_log(state: State<'_, AppState>) -> Vec<crate::ai::AiLogEntry> {
+    state.ai_log.snapshot()
+}
+
+/// Chat with the configured provider. `contextPath` optionally includes a
+/// note's content as system context (visible in the request log like
+/// everything else).
+#[tauri::command]
+pub async fn ai_chat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    messages: Vec<crate::ai::ChatMessage>,
+    context_path: Option<String>,
+) -> CmdResult<String> {
+    let config = crate::ai::load_config(&app_data(&app)?);
+    let system = match context_path {
+        Some(path) => {
+            let note = parse_path(&path)?;
+            let content =
+                state.with_engine(|engine| engine.vault().read_text(&note).map_err(err))?;
+            Some(format!(
+                "You are the AI assistant inside the Onyx note-taking app. \
+                 The user is currently viewing this note:\n\n---\n{content}\n---\n\
+                 Answer with reference to it when relevant."
+            ))
+        }
+        None => Some("You are the AI assistant inside the Onyx note-taking app.".to_owned()),
+    };
+    let log = std::sync::Arc::clone(&state.ai_log);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai::chat(&config, system.as_deref(), &messages, &log)
+    })
+    .await
+    .map_err(err)?
+}
