@@ -271,6 +271,66 @@ impl SyncClient {
         Ok(ack.head_seq)
     }
 
+    pub fn has_blob(&mut self, vault_id: [u8; 16], hash: &str) -> Result<bool, SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .head(format!(
+                "{}/v1/vaults/{}/blobs/{hash}",
+                self.base,
+                HEXLOWER.encode(&vault_id)
+            ))
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        Ok(response.status().is_success())
+    }
+
+    pub fn put_blob(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+        ciphertext: Vec<u8>,
+    ) -> Result<(), SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .put(format!(
+                "{}/v1/vaults/{}/blobs/{hash}",
+                self.base,
+                HEXLOWER.encode(&vault_id)
+            ))
+            .bearer_auth(token)
+            .body(ciphertext)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(SyncSetupError::Server(response.status().to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn get_blob(&mut self, vault_id: [u8; 16], hash: &str) -> Result<Vec<u8>, SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .get(format!(
+                "{}/v1/vaults/{}/blobs/{hash}",
+                self.base,
+                HEXLOWER.encode(&vault_id)
+            ))
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(SyncSetupError::Server(response.status().to_string()));
+        }
+        response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| SyncSetupError::Http(error.to_string()))
+    }
+
     pub fn pull(
         &mut self,
         vault_id: [u8; 16],
@@ -411,6 +471,27 @@ pub fn sync_cycle(
 ) -> Result<Vec<String>, SyncSetupError> {
     let engine_err = |error: crate::engine::EngineError| SyncSetupError::Server(error.to_string());
 
+    // Attachment outbox: encrypt under the lock, transfer without it.
+    let uploads = {
+        let mut guard = engine.lock();
+        let Some(engine) = guard.as_mut() else {
+            return Ok(Vec::new());
+        };
+        engine.attachments_to_upload().map_err(engine_err)?
+    };
+    if !uploads.is_empty() {
+        for upload in &uploads {
+            if !client.has_blob(vault_id, &upload.blob_hash)? {
+                client.put_blob(vault_id, &upload.blob_hash, upload.ciphertext.clone())?;
+            }
+        }
+        if let Some(engine) = engine.lock().as_mut() {
+            engine
+                .attachments_mark_uploaded(&uploads)
+                .map_err(engine_err)?;
+        }
+    }
+
     // Outbox: collect under the lock, push over the network WITHOUT it.
     let pushes = {
         let mut guard = engine.lock();
@@ -447,6 +528,34 @@ pub fn sync_cycle(
         };
         changed = engine.sync_apply_remote(&batch.ops).map_err(engine_err)?;
         engine.set_sync_cursor(last).map_err(engine_err)?;
+    }
+
+    // Attachment inbox: deletions from the merged manifest, then missing
+    // blobs (downloaded without the lock, stored under it).
+    let needed = {
+        let mut guard = engine.lock();
+        let Some(engine) = guard.as_mut() else {
+            return Ok(changed);
+        };
+        changed.extend(engine.apply_attachment_deletes().map_err(engine_err)?);
+        engine.attachments_needed().map_err(engine_err)?
+    };
+    for (path, blob_hash) in needed {
+        let ciphertext = match client.get_blob(vault_id, &blob_hash) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                // Blob not on the server yet (uploader mid-flight): retry
+                // next cycle rather than failing the whole sync.
+                tracing::debug!(%error, %path, "blob fetch deferred");
+                continue;
+            }
+        };
+        if let Some(engine) = engine.lock().as_mut() {
+            match engine.attachment_store(&path, &blob_hash, &ciphertext) {
+                Ok(paths) => changed.extend(paths),
+                Err(error) => tracing::warn!(%error, %path, "attachment store failed"),
+            }
+        }
     }
     Ok(changed)
 }

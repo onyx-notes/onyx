@@ -147,3 +147,75 @@ pub async fn pull_ops(
     })
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
+
+// ---------------------------------------------------------------------------
+// Blob lanes: content-addressed encrypted attachments
+// ---------------------------------------------------------------------------
+
+/// Reject absurd uploads (self-host default; configurable later).
+const MAX_BLOB_BYTES: usize = 512 * 1024 * 1024;
+
+fn valid_blob_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub async fn put_blob(
+    State(state): State<Arc<ServerState>>,
+    Path((vault, hash)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let vault = vault_id_from(&vault)?;
+    require_member(&state, vault, device)?;
+    if !valid_blob_hash(&hash) {
+        return Err((StatusCode::BAD_REQUEST, "invalid blob hash".into()));
+    }
+    if body.len() > MAX_BLOB_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "blob too large".into()));
+    }
+    // Content addressing is verifiable without keys: hash(ciphertext).
+    let actual = blake3::hash(&body).to_hex().to_string();
+    if actual != hash {
+        return Err((StatusCode::BAD_REQUEST, "hash mismatch".into()));
+    }
+    state
+        .db
+        .put_blob(vault, &hash, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn head_blob(
+    State(state): State<Arc<ServerState>>,
+    Path((vault, hash)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let vault = vault_id_from(&vault)?;
+    require_member(&state, vault, device)?;
+    let exists = state
+        .db
+        .has_blob(vault, &hash)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(if exists {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    })
+}
+
+pub async fn get_blob(
+    State(state): State<Arc<ServerState>>,
+    Path((vault, hash)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let vault = vault_id_from(&vault)?;
+    require_member(&state, vault, device)?;
+    state
+        .db
+        .get_blob(vault, &hash)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown blob".into()))
+}

@@ -137,6 +137,23 @@ pub struct PendingPush {
     version: Vec<u8>,
 }
 
+/// One encrypted attachment ready for blob upload.
+pub struct BlobUpload {
+    pub path: String,
+    pub blob_hash: String,
+    pub ciphertext: Vec<u8>,
+    plaintext_hash: [u8; 32],
+}
+
+/// `photo.png` → `photo (conflict).png` — the keep-both rename for
+/// concurrently-modified binaries.
+fn conflict_path(path: &str) -> String {
+    match path.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem} (conflict).{ext}"),
+        _ => format!("{path} (conflict)"),
+    }
+}
+
 pub struct Engine {
     root: PathBuf,
     vault: Vault,
@@ -684,6 +701,186 @@ impl Engine {
         }
         sync.save_manifest_if_dirty()?;
         Ok(changed_paths)
+    }
+
+    // ------------------------------------------------------------------
+    // Attachment sync (content-addressed encrypted blobs)
+    // ------------------------------------------------------------------
+
+    /// Attachments whose content changed since last sync: encrypted and
+    /// ready for blob upload. Also tombstones attachments whose files
+    /// vanished (deletion propagates via the manifest attachment map).
+    pub fn attachments_to_upload(&mut self) -> Result<Vec<BlobUpload>, EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let mut uploads = Vec::new();
+
+        for record in self.index.all_notes()? {
+            if record.is_markdown {
+                continue;
+            }
+            let path = record.path.as_str().to_owned();
+            let stored = sync.store.attachment(&path)?;
+            if stored.as_ref().map(|(hash, _, _)| *hash) == Some(record.hash) {
+                continue;
+            }
+            let content = self.vault.read_bytes(&record.path)?;
+            let plaintext_hash = *blake3::hash(&content).as_bytes();
+            if stored.as_ref().map(|(hash, _, _)| *hash) == Some(plaintext_hash) {
+                continue;
+            }
+            let ciphertext = onyx_crypto::encrypt(&sync.key, &content);
+            let blob_hash = blake3::hash(&ciphertext).to_hex().to_string();
+            uploads.push(BlobUpload {
+                path,
+                blob_hash,
+                ciphertext,
+                plaintext_hash,
+            });
+        }
+
+        // Deletion scan: previously-synced attachments whose file is gone.
+        for path in sync.store.all_attachment_paths()? {
+            let Ok(note_path) = NotePath::new(&path) else {
+                continue;
+            };
+            if !self.vault.fs().exists(&note_path) {
+                sync.ensure_manifest()?.set_attachment(&path, "")?;
+                sync.manifest_dirty = true;
+                sync.store.remove_attachment(&path)?;
+            }
+        }
+        Ok(uploads)
+    }
+
+    /// Record completed uploads in the manifest + sidecar. Call only after
+    /// the blobs are confirmed on the server (receivers fetch by hash).
+    pub fn attachments_mark_uploaded(&mut self, uploads: &[BlobUpload]) -> Result<(), EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        for upload in uploads {
+            sync.ensure_manifest()?
+                .set_attachment(&upload.path, &upload.blob_hash)?;
+            sync.manifest_dirty = true;
+            sync.store.set_attachment(
+                &upload.path,
+                upload.plaintext_hash,
+                &upload.blob_hash,
+                true, // pending until the merged manifest confirms our blob
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Apply attachment deletions from the (already-merged) manifest.
+    /// Returns changed paths.
+    pub fn apply_attachment_deletes(&mut self) -> Result<Vec<String>, EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let entries = sync.ensure_manifest()?.attachments();
+        let mut changed = Vec::new();
+        for (path, blob_hash) in entries {
+            if !blob_hash.is_empty() {
+                continue;
+            }
+            let Ok(note_path) = NotePath::new(&path) else {
+                continue;
+            };
+            // Only delete what we know we synced (a brand-new local file at
+            // the same path must not be destroyed by an old tombstone).
+            let Some((synced_hash, _, _)) = sync.store.attachment(&path)? else {
+                continue;
+            };
+            if let Ok(content) = self.vault.read_bytes(&note_path) {
+                if *blake3::hash(&content).as_bytes() == synced_hash {
+                    self.vault.remove(&note_path)?;
+                    self.index
+                        .handle_event(&self.vault, &VaultEvent::Removed(note_path.clone()))?;
+                    self.quick.remove(self.vault.note_id(&note_path));
+                    changed.push(path.clone());
+                }
+            }
+            sync.store.remove_attachment(&path)?;
+        }
+        Ok(changed)
+    }
+
+    /// Attachments the manifest says exist but we don't have (or have an
+    /// outdated copy of): `(path, blob_hash)` pairs to download.
+    pub fn attachments_needed(&mut self) -> Result<Vec<(String, String)>, EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let mut needed = Vec::new();
+        for (path, blob_hash) in sync.ensure_manifest()?.attachments() {
+            if blob_hash.is_empty() {
+                continue;
+            }
+            let stored = sync.store.attachment(&path)?;
+            if stored.as_ref().map(|(_, blob, _)| blob.clone()) == Some(blob_hash.clone()) {
+                // The merged manifest agrees with our blob: acknowledge.
+                if stored.is_some_and(|(_, _, pending)| pending) {
+                    sync.store.ack_attachment(&path)?;
+                }
+                continue;
+            }
+            needed.push((path, blob_hash));
+        }
+        Ok(needed)
+    }
+
+    /// Store a downloaded attachment blob. If the local file was modified
+    /// while a different version synced, the local version is kept beside
+    /// it as a conflict copy (keep-both, never silent loss). Returns the
+    /// paths changed.
+    pub fn attachment_store(
+        &mut self,
+        path: &str,
+        blob_hash: &str,
+        ciphertext: &[u8],
+    ) -> Result<Vec<String>, EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let plaintext = onyx_crypto::decrypt(&sync.key, ciphertext)
+            .map_err(|error| EngineError::Sync(onyx_sync::SyncError::Corrupt(error.to_string())))?;
+        let note_path = NotePath::new(path)?;
+        let mut changed = Vec::new();
+
+        if let Ok(existing) = self.vault.read_bytes(&note_path) {
+            let existing_hash = *blake3::hash(&existing).as_bytes();
+            let stored = sync.store.attachment(path)?;
+            if existing_hash == *blake3::hash(&plaintext).as_bytes() {
+                // Already identical: record and done.
+                sync.store
+                    .set_attachment(path, existing_hash, blob_hash, false)?;
+                return Ok(changed);
+            }
+            // Keep-both cases: (a) our upload lost a concurrent LWW race
+            // (pending + different incoming blob), or (b) the file was
+            // modified locally after the last sync record.
+            let lost_race = stored
+                .as_ref()
+                .is_some_and(|(_, blob, pending)| *pending && *blob != blob_hash);
+            let locally_dirty = stored
+                .as_ref()
+                .is_some_and(|(hash, _, _)| *hash != existing_hash);
+            if lost_race || locally_dirty {
+                let conflict = conflict_path(path);
+                if let Ok(conflict_note) = NotePath::new(&conflict) {
+                    self.vault.rename(&note_path, &conflict_note)?;
+                    self.index
+                        .handle_event(&self.vault, &VaultEvent::Created(conflict_note))?;
+                    changed.push(conflict);
+                }
+            }
+        }
+
+        self.vault.write(&note_path, &plaintext)?;
+        self.index
+            .handle_event(&self.vault, &VaultEvent::Modified(note_path.clone()))?;
+        let id = self.vault.note_id(&note_path);
+        if let Some(record) = self.index.note(id)? {
+            self.quick
+                .upsert(id, &record.title, record.path.as_str(), &[]);
+        }
+        sync.store
+            .set_attachment(path, *blake3::hash(&plaintext).as_bytes(), blob_hash, false)?;
+        changed.push(path.to_owned());
+        Ok(changed)
     }
 
     /// Flush pending search changes (debounced by the event loop).

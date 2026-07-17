@@ -147,6 +147,29 @@ impl SyncDoc {
         }
         entries
     }
+
+    /// Record an attachment's current blob (`""` = deleted). LWW per path.
+    pub fn set_attachment(&self, path: &str, blob_hash_hex: &str) -> Result<(), SyncError> {
+        self.doc
+            .get_map("attachments")
+            .insert(path, blob_hash_hex)
+            .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// All attachment entries (vault path → blob hash hex, "" = deleted).
+    pub fn attachments(&self) -> Vec<(String, String)> {
+        let mut entries = Vec::new();
+        if let loro::LoroValue::Map(map) = self.doc.get_map("attachments").get_value() {
+            for (key, value) in map.iter() {
+                if let loro::LoroValue::String(hash) = value {
+                    entries.push((key.clone(), hash.to_string()));
+                }
+            }
+        }
+        entries
+    }
 }
 
 #[cfg(test)]

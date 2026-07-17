@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value BLOB NOT NULL
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS attachments (
+    path           TEXT PRIMARY KEY,
+    plaintext_hash BLOB NOT NULL,
+    blob_hash      TEXT NOT NULL,
+    -- 1 while our upload awaits acknowledgement by the merged manifest;
+    -- losing an LWW race while pending is the keep-both conflict signal.
+    pending        INTEGER NOT NULL DEFAULT 0
+) STRICT;
 ";
 
 pub struct SyncStore {
@@ -151,6 +160,58 @@ impl SyncStore {
             .filter_map(|result| result.ok().and_then(|bytes| bytes.try_into().ok()))
             .collect();
         Ok(ids)
+    }
+
+    /// Attachment sync record: `(plaintext_hash, blob_hash, pending)`.
+    pub fn attachment(&self, path: &str) -> Result<Option<([u8; 32], String, bool)>, SyncError> {
+        let row: Option<(Vec<u8>, String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT plaintext_hash, blob_hash, pending FROM attachments WHERE path = ?1",
+                params![path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(hash, blob, pending)| Some((hash.try_into().ok()?, blob, pending != 0))))
+    }
+
+    pub fn set_attachment(
+        &mut self,
+        path: &str,
+        plaintext_hash: [u8; 32],
+        blob_hash: &str,
+        pending: bool,
+    ) -> Result<(), SyncError> {
+        self.conn.execute(
+            "INSERT INTO attachments (path, plaintext_hash, blob_hash, pending)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET plaintext_hash = ?2, blob_hash = ?3, pending = ?4",
+            params![path, plaintext_hash, blob_hash, pending],
+        )?;
+        Ok(())
+    }
+
+    /// Clear the pending flag (the merged manifest acknowledged our blob).
+    pub fn ack_attachment(&mut self, path: &str) -> Result<(), SyncError> {
+        self.conn.execute(
+            "UPDATE attachments SET pending = 0 WHERE path = ?1",
+            params![path],
+        )?;
+        Ok(())
+    }
+
+    pub fn all_attachment_paths(&self) -> Result<Vec<String>, SyncError> {
+        let mut statement = self.conn.prepare("SELECT path FROM attachments")?;
+        let paths = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(paths)
+    }
+
+    pub fn remove_attachment(&mut self, path: &str) -> Result<(), SyncError> {
+        self.conn
+            .execute("DELETE FROM attachments WHERE path = ?1", params![path])?;
+        Ok(())
     }
 
     /// Opaque metadata slot (device id, server cursor, keys of that shape).

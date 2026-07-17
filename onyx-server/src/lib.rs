@@ -62,6 +62,12 @@ pub fn app(state: Arc<ServerState>) -> Router {
         .route("/v1/vaults/{vault}/ops", post(routes::push_ops))
         .route("/v1/vaults/{vault}/ops", get(routes::pull_ops))
         .route("/v1/vaults/{vault}/ws", get(ws::live))
+        .route(
+            "/v1/vaults/{vault}/blobs/{hash}",
+            axum::routing::put(routes::put_blob)
+                .head(routes::head_blob)
+                .get(routes::get_blob),
+        )
         .with_state(state)
 }
 

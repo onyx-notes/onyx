@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS vault_devices (
     PRIMARY KEY (vault_id, device_id)
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS blobs (
+    vault_id   BLOB NOT NULL,
+    hash       TEXT NOT NULL,
+    data       BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, hash)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS ops (
     vault_id   BLOB NOT NULL,
     seq        INTEGER NOT NULL,
@@ -220,6 +228,36 @@ impl Db {
         }
         tx.commit()?;
         Ok(head as u64)
+    }
+
+    pub fn put_blob(&self, vault_id: [u8; 16], hash: &str, data: &[u8]) -> Result<(), DbError> {
+        self.conn.lock().execute(
+            "INSERT INTO blobs (vault_id, hash, data, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT DO NOTHING",
+            params![vault_id, hash, data, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_blob(&self, vault_id: [u8; 16], hash: &str) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT data FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn has_blob(&self, vault_id: [u8; 16], hash: &str) -> Result<bool, DbError> {
+        let count: i64 = self.conn.lock().query_row(
+            "SELECT COUNT(*) FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+            params![vault_id, hash],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Ops after `since`, capped at `limit`, plus the current head.

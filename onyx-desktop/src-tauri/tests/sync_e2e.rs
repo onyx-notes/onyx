@@ -218,3 +218,82 @@ fn live_push_wakes_subscribers_immediately() {
     alive.store(false, std::sync::atomic::Ordering::Relaxed);
     std::thread::sleep(std::time::Duration::from_millis(100));
 }
+
+#[test]
+fn attachments_sync_between_devices() {
+    let server = start_server();
+    let vault_id = [8u8; 16];
+
+    let mut alice = device(&server, &[]);
+    let mut bob = device(&server, &[]);
+    alice.client.join(vault_id).unwrap();
+    bob.client.join(vault_id).unwrap();
+
+    // A binary attachment (not valid UTF-8) travels A → B intact.
+    let png: Vec<u8> = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0x00]
+        .iter()
+        .copied()
+        .chain((0..2000).map(|byte| (byte % 251) as u8))
+        .collect();
+    std::fs::create_dir_all(alice.vault_path().join("assets")).unwrap();
+    std::fs::write(alice.vault_path().join("assets/pic.png"), &png).unwrap();
+    reconcile(&alice);
+
+    alice.cycle(vault_id);
+    let changed = bob.cycle(vault_id);
+    assert!(changed.contains(&"assets/pic.png".to_owned()));
+    assert_eq!(
+        std::fs::read(bob.vault_path().join("assets/pic.png")).unwrap(),
+        png
+    );
+
+    // Modification propagates (idempotent for Alice).
+    let png_v2: Vec<u8> = png.iter().map(|byte| byte.wrapping_add(1)).collect();
+    std::fs::write(bob.vault_path().join("assets/pic.png"), &png_v2).unwrap();
+    reconcile(&bob);
+    bob.cycle(vault_id);
+    let changed = alice.cycle(vault_id);
+    assert!(changed.contains(&"assets/pic.png".to_owned()));
+    assert_eq!(
+        std::fs::read(alice.vault_path().join("assets/pic.png")).unwrap(),
+        png_v2
+    );
+
+    // Concurrent binary modification: keep-both, never silent loss.
+    std::fs::write(alice.vault_path().join("assets/pic.png"), b"alice version").unwrap();
+    std::fs::write(bob.vault_path().join("assets/pic.png"), b"bob version").unwrap();
+    reconcile(&alice);
+    reconcile(&bob);
+    // Several rounds: uploads, LWW merge, conflict copy creation on the
+    // losing side, and propagation of the conflict copy back out.
+    for _ in 0..4 {
+        alice.cycle(vault_id);
+        bob.cycle(vault_id);
+    }
+    // Both versions survive on BOTH devices (main file + conflict copy).
+    for device in [&alice, &bob] {
+        let main = std::fs::read(device.vault_path().join("assets/pic.png")).unwrap();
+        let conflict = std::fs::read(device.vault_path().join("assets/pic (conflict).png"))
+            .expect("conflict copy must exist everywhere after propagation");
+        let kept = [main, conflict];
+        assert!(kept.contains(&b"alice version".to_vec()), "alice's lost");
+        assert!(kept.contains(&b"bob version".to_vec()), "bob's lost");
+    }
+
+    // Deletion propagates.
+    std::fs::remove_file(alice.vault_path().join("assets/pic.png")).unwrap();
+    reconcile(&alice);
+    alice.cycle(vault_id);
+    bob.cycle(vault_id);
+    assert!(!bob.vault_path().join("assets/pic.png").exists());
+}
+
+/// Let the engine notice external file changes (headless: no watcher).
+fn reconcile(device: &TestDevice) {
+    let mut guard = device.engine.lock();
+    guard
+        .as_mut()
+        .unwrap()
+        .apply_event(&onyx_core::VaultEvent::BulkChange)
+        .unwrap();
+}
