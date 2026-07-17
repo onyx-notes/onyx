@@ -367,3 +367,53 @@ fn reconcile(device: &TestDevice) {
         .apply_event(&onyx_core::VaultEvent::BulkChange)
         .unwrap();
 }
+
+#[test]
+fn enrollment_pairs_a_new_device_end_to_end() {
+    use onyx_desktop_lib::sync::{enroll_approve, enroll_begin, enroll_claim};
+
+    let server = start_server();
+    let vault_id = [14u8; 16];
+    let op_key = [77u8; 32];
+
+    // Existing device (Alice) already syncs this vault.
+    let mut alice = device(&server, &[("welcome.md", "# Welcome\nshared note\n")]);
+    alice.client.join(vault_id).unwrap();
+    alice.cycle(vault_id);
+
+    // New device (Bob) begins enrollment: publishes a request, gets a code.
+    let mut bob = device(&server, &[]);
+    let (code, receiver) = enroll_begin(&mut bob.client).unwrap();
+    assert!(code.len() >= 6);
+
+    // Alice approves with the code she was shown; gets a SAS.
+    let alice_sas = enroll_approve(&mut alice.client, &code, vault_id, &op_key).unwrap();
+
+    // Bob claims: same SAS on his screen, and the sealed payload opens.
+    let (payload, bob_sas) = enroll_claim(
+        &mut bob.client,
+        &code,
+        &receiver,
+        std::time::Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(alice_sas, bob_sas, "SAS must match on both screens");
+    assert_eq!(payload.vault_id, vault_id);
+    assert_eq!(payload.op_key, op_key);
+
+    // The response is single-use: claiming again fails.
+    assert!(
+        enroll_claim(
+            &mut bob.client,
+            &code,
+            &receiver,
+            std::time::Duration::from_millis(10),
+        )
+        .is_err()
+    );
+
+    // With the received identity, Bob joins and syncs for real.
+    bob.client.join(payload.vault_id).unwrap();
+    bob.cycle(payload.vault_id);
+    assert_eq!(bob.read("welcome.md"), "# Welcome\nshared note\n");
+}

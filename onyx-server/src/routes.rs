@@ -219,3 +219,84 @@ pub async fn get_blob(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "unknown blob".into()))
 }
+
+// ---------------------------------------------------------------------------
+// Enrollment relay: opaque sealed blobs under short-lived codes. The
+// server can neither read nor usefully tamper (the SAS catches it).
+// ---------------------------------------------------------------------------
+
+fn valid_enroll_code(code: &str) -> bool {
+    code.len() >= 6
+        && code.len() <= 32
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+pub async fn enroll_create(
+    State(state): State<Arc<ServerState>>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, RouteError> {
+    authenticate(&state, &headers)?;
+    if !valid_enroll_code(&code) || body.is_empty() || body.len() > 4096 {
+        return Err((StatusCode::BAD_REQUEST, "invalid enrollment".into()));
+    }
+    let created = state
+        .db
+        .enroll_create(&code, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if created {
+        Ok(StatusCode::CREATED)
+    } else {
+        Err((StatusCode::CONFLICT, "code already in use".into()))
+    }
+}
+
+pub async fn enroll_request(
+    State(state): State<Arc<ServerState>>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, RouteError> {
+    authenticate(&state, &headers)?;
+    state
+        .db
+        .enroll_request(&code)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown enrollment code".into()))
+}
+
+pub async fn enroll_respond(
+    State(state): State<Arc<ServerState>>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, RouteError> {
+    authenticate(&state, &headers)?;
+    if body.is_empty() || body.len() > 4096 {
+        return Err((StatusCode::BAD_REQUEST, "invalid response".into()));
+    }
+    let stored = state
+        .db
+        .enroll_respond(&code, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if stored {
+        Ok(StatusCode::OK)
+    } else {
+        Err((StatusCode::NOT_FOUND, "unknown or answered code".into()))
+    }
+}
+
+pub async fn enroll_claim(
+    State(state): State<Arc<ServerState>>,
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> Result<Vec<u8>, RouteError> {
+    authenticate(&state, &headers)?;
+    state
+        .db
+        .enroll_claim(&code)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "no response yet".into()))
+}

@@ -228,6 +228,51 @@ impl SyncClient {
         &self.base
     }
 
+    /// POST raw bytes; Ok(true) on 2xx, Ok(false) on 409/404 (caller
+    /// semantics), Err otherwise.
+    pub(crate) fn http_post_bytes(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        token: &str,
+    ) -> Result<bool, SyncSetupError> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(token)
+            .body(body)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            Ok(true)
+        } else if status.as_u16() == 409 || status.as_u16() == 404 {
+            Ok(false)
+        } else {
+            Err(SyncSetupError::Server(status.to_string()))
+        }
+    }
+
+    pub(crate) fn http_get_bytes(
+        &self,
+        path: &str,
+        token: &str,
+    ) -> Result<Vec<u8>, SyncSetupError> {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(SyncSetupError::Server(response.status().to_string()));
+        }
+        response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| SyncSetupError::Http(error.to_string()))
+    }
+
     pub fn join(&mut self, vault_id: [u8; 16]) -> Result<(), SyncSetupError> {
         let token = self.ensure_auth()?;
         self.post_json(
@@ -626,5 +671,108 @@ mod tests {
         let first = DeviceIdentity::load_or_create(&path).unwrap();
         let second = DeviceIdentity::load_or_create(&path).unwrap();
         assert_eq!(first.peer(), second.peer());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device enrollment (pairing): sealed-box handoff of the sync identity,
+// verified by a SAS the user compares on both screens.
+// ---------------------------------------------------------------------------
+
+/// What enrollment transfers: the sync identity only. At-rest encryption
+/// stays per-device (each vault has its own local key), so any vault type
+/// can enroll any other.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct EnrollmentPayload {
+    pub vault_id: [u8; 16],
+    pub op_key: [u8; 32],
+}
+
+/// New-device side, step 1: publish a request under a fresh short code.
+/// Returns `(code, receiver)` — hold the receiver for the claim step.
+pub fn enroll_begin(
+    client: &mut SyncClient,
+) -> Result<(String, onyx_crypto::EnrollmentReceiver), SyncSetupError> {
+    let receiver = onyx_crypto::EnrollmentReceiver::generate();
+    let mut code_bytes = [0u8; 5];
+    getrandom::fill(&mut code_bytes).expect("OS randomness must be available");
+    let code = data_encoding::BASE32_NOPAD
+        .encode(&code_bytes)
+        .to_lowercase();
+
+    let token = client.ensure_auth()?;
+    let response = client.http_post_bytes(
+        &format!("/v1/enroll/{code}"),
+        receiver.public().to_vec(),
+        &token,
+    )?;
+    if !response {
+        return Err(SyncSetupError::Server("enrollment code collision".into()));
+    }
+    Ok((code, receiver))
+}
+
+/// Existing-device side: fetch the request, seal our sync identity to it,
+/// publish the response. Returns the SAS to display.
+pub fn enroll_approve(
+    client: &mut SyncClient,
+    code: &str,
+    vault_id: [u8; 16],
+    op_key: &[u8; 32],
+) -> Result<String, SyncSetupError> {
+    let token = client.ensure_auth()?;
+    let receiver_pub_bytes = client.http_get_bytes(
+        &format!("/v1/enroll/{}", code.trim().to_lowercase()),
+        &token,
+    )?;
+    let receiver_pub: [u8; 32] = receiver_pub_bytes
+        .try_into()
+        .map_err(|_| SyncSetupError::Server("malformed enrollment request".into()))?;
+
+    let payload = postcard::to_allocvec(&EnrollmentPayload {
+        vault_id,
+        op_key: *op_key,
+    })
+    .map_err(|error| SyncSetupError::Server(error.to_string()))?;
+    let message = onyx_crypto::seal_enrollment(&receiver_pub, &payload);
+    let sas = onyx_crypto::sas_code(&receiver_pub, &message);
+
+    let stored = client.http_post_bytes(
+        &format!("/v1/enroll/{}/response", code.trim().to_lowercase()),
+        message,
+        &token,
+    )?;
+    if !stored {
+        return Err(SyncSetupError::Server("enrollment already answered".into()));
+    }
+    Ok(sas)
+}
+
+/// New-device side, step 2: poll for the sealed response; on arrival,
+/// open it and return `(payload, sas)` — the caller shows the SAS and
+/// applies the config only after the user confirms it matches.
+pub fn enroll_claim(
+    client: &mut SyncClient,
+    code: &str,
+    receiver: &onyx_crypto::EnrollmentReceiver,
+    timeout: std::time::Duration,
+) -> Result<(EnrollmentPayload, String), SyncSetupError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let token = client.ensure_auth()?;
+        match client.http_get_bytes(&format!("/v1/enroll/{code}/response"), &token) {
+            Ok(message) => {
+                let sas = onyx_crypto::sas_code(&receiver.public(), &message);
+                let payload_bytes = onyx_crypto::open_enrollment(receiver, &message)
+                    .map_err(|error| SyncSetupError::Server(error.to_string()))?;
+                let payload: EnrollmentPayload = postcard::from_bytes(&payload_bytes)
+                    .map_err(|error| SyncSetupError::Server(error.to_string()))?;
+                return Ok((payload, sas));
+            }
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            Err(error) => return Err(error),
+        }
     }
 }

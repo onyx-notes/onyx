@@ -21,6 +21,7 @@ crossbeam-channel = { workspace = true }
 onyx-core = { workspace = true }
 onyx-crypto = { workspace = true }
 onyx-proto = { workspace = true }
+postcard = { workspace = true }
 opendal = { workspace = true }
 tokio = { workspace = true }
 onyx-sync = { workspace = true }

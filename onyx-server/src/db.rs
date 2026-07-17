@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS vault_devices (
     PRIMARY KEY (vault_id, device_id)
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS enrollments (
+    code       TEXT PRIMARY KEY,
+    request    BLOB NOT NULL,
+    response   BLOB,
+    created_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS blobs (
     vault_id   BLOB NOT NULL,
     hash       TEXT NOT NULL,
@@ -228,6 +235,62 @@ impl Db {
         }
         tx.commit()?;
         Ok(head as u64)
+    }
+
+    /// Enrollment relay: opaque request/response blobs under a short-lived
+    /// code. TTL keeps the table clean; contents are sealed client-side.
+    pub fn enroll_create(&self, code: &str, request: &[u8]) -> Result<bool, DbError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM enrollments WHERE created_at < ?1",
+            params![now() - 600],
+        )?;
+        let inserted = conn.execute(
+            "INSERT INTO enrollments (code, request, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO NOTHING",
+            params![code, request, now()],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    pub fn enroll_request(&self, code: &str) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT request FROM enrollments WHERE code = ?1 AND created_at >= ?2",
+                params![code, now() - 600],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn enroll_respond(&self, code: &str, response: &[u8]) -> Result<bool, DbError> {
+        let updated = self.conn.lock().execute(
+            "UPDATE enrollments SET response = ?2
+             WHERE code = ?1 AND response IS NULL AND created_at >= ?3",
+            params![code, response, now() - 600],
+        )?;
+        Ok(updated == 1)
+    }
+
+    /// Claim (and delete — single use) the response for a code.
+    pub fn enroll_claim(&self, code: &str) -> Result<Option<Vec<u8>>, DbError> {
+        let conn = self.conn.lock();
+        let response: Option<Option<Vec<u8>>> = conn
+            .query_row(
+                "SELECT response FROM enrollments WHERE code = ?1",
+                params![code],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match response.flatten() {
+            Some(payload) => {
+                conn.execute("DELETE FROM enrollments WHERE code = ?1", params![code])?;
+                Ok(Some(payload))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn put_blob(&self, vault_id: [u8; 16], hash: &str, data: &[u8]) -> Result<(), DbError> {

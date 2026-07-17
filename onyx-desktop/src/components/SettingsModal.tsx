@@ -74,6 +74,45 @@ export default function SettingsModal(props: {
     }
   };
 
+  // Device pairing (enrollment): approve side + receive side.
+  const [pairResult, setPairResult] = createSignal<string | null>(null);
+  const [pairCodeInput, setPairCodeInput] = createSignal("");
+
+  const approveDevice = async () => {
+    try {
+      const result = await api.enrollApproveDevice(pairCodeInput().trim());
+      setPairResult(t("pair.approveSas", { sas: result.sas }));
+    } catch (error) {
+      setPairResult(String(error));
+    }
+  };
+
+  const receivePairing = async () => {
+    try {
+      const started = await api.enrollStart(syncUrl().trim());
+      setPairResult(t("pair.showCode", { code: started.code }));
+      const waited = await api.enrollWait();
+      setPairResult(t("pair.confirmSas", { sas: waited.sas }));
+    } catch (error) {
+      setPairResult(String(error));
+      await api.enrollCancel();
+    }
+  };
+
+  const confirmPairing = async () => {
+    try {
+      await api.enrollConfirm();
+      setPairResult(t("pair.done"));
+    } catch (error) {
+      setPairResult(String(error));
+    }
+  };
+
+  const cancelPairing = async () => {
+    await api.enrollCancel();
+    setPairResult(null);
+  };
+
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
 
@@ -174,6 +213,34 @@ export default function SettingsModal(props: {
               </button>
             </div>
             <Show when={syncResult()}>
+              {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+
+            <div class="settings-row">
+              <input
+                type="text"
+                placeholder={t("pair.codePlaceholder")}
+                value={pairCodeInput()}
+                onInput={(event) => setPairCodeInput(event.currentTarget.value)}
+              />
+              <button class="settings-button" onClick={() => void approveDevice()}>
+                {t("pair.approve")}
+              </button>
+            </div>
+            <div class="settings-row">
+              <button class="settings-button" onClick={() => void receivePairing()}>
+                {t("pair.receive")}
+              </button>
+              <span>
+                <button class="settings-button" onClick={() => void confirmPairing()}>
+                  {t("pair.sasMatches")}
+                </button>{" "}
+                <button class="settings-button" onClick={() => void cancelPairing()}>
+                  {t("settings.cancel")}
+                </button>
+              </span>
+            </div>
+            <Show when={pairResult()}>
               {(message) => <div class="settings-imported">{message()}</div>}
             </Show>
           </div>

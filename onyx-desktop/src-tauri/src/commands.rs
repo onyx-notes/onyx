@@ -836,3 +836,167 @@ pub async fn ai_chat(
     .await
     .map_err(err)?
 }
+
+// ---------------------------------------------------------------------------
+// Device enrollment commands
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollStart {
+    pub code: String,
+}
+
+/// New-device side, step 1: publish an enrollment request. Show the code
+/// to the user (they type it on the existing device).
+#[tauri::command]
+pub fn enroll_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_url: String,
+) -> CmdResult<EnrollStart> {
+    let device_path = app_data(&app)?.join("device.key");
+    let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+    let mut client = crate::sync::SyncClient::new(&server_url, device).map_err(err)?;
+    let (code, receiver) = crate::sync::enroll_begin(&mut client).map_err(err)?;
+    *state.pending_enroll.lock() = Some(crate::state::PendingEnrollment {
+        server_url,
+        code: code.clone(),
+        receiver,
+        payload: None,
+    });
+    Ok(EnrollStart { code })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollWaitResult {
+    pub sas: String,
+}
+
+/// New-device side, step 2: wait for the existing device to respond.
+/// Returns the SAS for the user to compare; nothing is applied yet.
+#[tauri::command]
+pub async fn enroll_wait(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CmdResult<EnrollWaitResult> {
+    let (server_url, code) = {
+        let guard = state.pending_enroll.lock();
+        let pending = guard.as_ref().ok_or("no enrollment in progress")?;
+        (pending.server_url.clone(), pending.code.clone())
+    };
+    let device_path = app_data(&app)?.join("device.key");
+
+    let (payload, sas) = {
+        let receiver = {
+            let mut guard = state.pending_enroll.lock();
+            let pending = guard.as_mut().ok_or("no enrollment in progress")?;
+            // The receiver moves into the blocking task; keep the slot.
+            std::mem::replace(
+                &mut pending.receiver,
+                onyx_crypto::EnrollmentReceiver::generate(),
+            )
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+            let mut client = crate::sync::SyncClient::new(&server_url, device).map_err(err)?;
+            crate::sync::enroll_claim(
+                &mut client,
+                &code,
+                &receiver,
+                std::time::Duration::from_secs(180),
+            )
+            .map_err(err)
+        })
+        .await
+        .map_err(err)??
+    };
+
+    let mut guard = state.pending_enroll.lock();
+    if let Some(pending) = guard.as_mut() {
+        pending.payload = Some(payload);
+    }
+    Ok(EnrollWaitResult { sas })
+}
+
+/// New-device side, step 3: the user confirmed the SAS matches — apply
+/// the received sync identity to the open vault and start syncing.
+#[tauri::command]
+pub fn enroll_confirm(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    use data_encoding::HEXLOWER;
+
+    let (server_url, payload) = {
+        let mut guard = state.pending_enroll.lock();
+        let pending = guard.take().ok_or("no enrollment in progress")?;
+        let payload = pending.payload.ok_or("enrollment response not received")?;
+        (pending.server_url, payload)
+    };
+    let config = crate::sync::SyncConfig {
+        server_url,
+        vault_id: HEXLOWER.encode(&payload.vault_id),
+        key: Some(HEXLOWER.encode(&payload.op_key)),
+    };
+    state.with_engine(|engine| crate::sync::save_config(engine.vault(), &config).map_err(err))?;
+    start_sync(&app, &state, &config)
+}
+
+/// Abort a pending enrollment (SAS mismatch or user cancel).
+#[tauri::command]
+pub fn enroll_cancel(state: State<'_, AppState>) {
+    *state.pending_enroll.lock() = None;
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollApproveResult {
+    pub sas: String,
+}
+
+/// Existing-device side: approve a new device by its code. Requires sync
+/// to be enabled on this vault (we hand over its sync identity).
+#[tauri::command]
+pub fn enroll_approve_device(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    code: String,
+) -> CmdResult<EnrollApproveResult> {
+    use data_encoding::HEXLOWER;
+
+    let (config, crypto_key) = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        let config =
+            crate::sync::load_config(engine.vault()).ok_or("sync is not enabled on this vault")?;
+        (config, engine.crypto_key())
+    };
+    let (vault_id, op_key) = match (&config.key, crypto_key) {
+        (Some(key_hex), _) => {
+            let key: [u8; 32] = HEXLOWER
+                .decode(key_hex.as_bytes())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or("corrupt sync config")?;
+            let vault_id: [u8; 16] = HEXLOWER
+                .decode(config.vault_id.as_bytes())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or("corrupt sync config")?;
+            (vault_id, key)
+        }
+        (None, Some(vault_key)) => {
+            // MUST match derive_encrypted_sync_identity's derivation
+            // exactly — the enrollee gets the same op key this vault uses.
+            let (vault_id, _) = crate::sync::derive_encrypted_sync_identity(&vault_key);
+            let op_key = vault_key.derive("onyx-sync 2026-07 op key v1", &[]);
+            (vault_id, op_key)
+        }
+        (None, None) => return Err("sync config missing key".into()),
+    };
+
+    let device_path = app_data(&app)?.join("device.key");
+    let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+    let mut client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
+    let sas = crate::sync::enroll_approve(&mut client, &code, vault_id, &op_key).map_err(err)?;
+    Ok(EnrollApproveResult { sas })
+}

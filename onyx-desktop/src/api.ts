@@ -164,6 +164,13 @@ export const api = {
   syncJoin: (serverUrl: string, code: string) =>
     invoke<void>("sync_join", { serverUrl, code }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
+  enrollStart: (serverUrl: string) =>
+    invoke<{ code: string }>("enroll_start", { serverUrl }),
+  enrollWait: () => invoke<{ sas: string }>("enroll_wait"),
+  enrollConfirm: () => invoke<void>("enroll_confirm"),
+  enrollCancel: () => invoke<void>("enroll_cancel"),
+  enrollApproveDevice: (code: string) =>
+    invoke<{ sas: string }>("enroll_approve_device", { code }),
   getBackupConfig: () => invoke<BackupConfig>("get_backup_config"),
   setBackupConfig: (config: BackupConfig) =>
     invoke<void>("set_backup_config", { config }),

@@ -41,6 +41,16 @@ pub struct AppState {
     backup_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
     /// AI request log — the "see exactly what left your machine" surface.
     pub ai_log: Arc<crate::ai::AiLog>,
+    /// In-flight device enrollment (new-device side).
+    pub pending_enroll: Mutex<Option<PendingEnrollment>>,
+}
+
+/// New-device enrollment state between begin → wait → confirm.
+pub struct PendingEnrollment {
+    pub server_url: String,
+    pub code: String,
+    pub receiver: onyx_crypto::EnrollmentReceiver,
+    pub payload: Option<crate::sync::EnrollmentPayload>,
 }
 
 impl AppState {

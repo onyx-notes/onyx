@@ -16,6 +16,7 @@ chacha20poly1305 = { workspace = true }
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
 thiserror = { workspace = true }
+x25519-dalek = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

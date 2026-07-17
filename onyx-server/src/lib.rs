@@ -63,6 +63,14 @@ pub fn app(state: Arc<ServerState>) -> Router {
         .route("/v1/vaults/{vault}/ops", get(routes::pull_ops))
         .route("/v1/vaults/{vault}/ws", get(ws::live))
         .route(
+            "/v1/enroll/{code}",
+            post(routes::enroll_create).get(routes::enroll_request),
+        )
+        .route(
+            "/v1/enroll/{code}/response",
+            post(routes::enroll_respond).get(routes::enroll_claim),
+        )
+        .route(
             "/v1/vaults/{vault}/blobs/{hash}",
             axum::routing::put(routes::put_blob)
                 .head(routes::head_blob)

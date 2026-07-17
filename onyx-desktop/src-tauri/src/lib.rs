@@ -63,6 +63,11 @@ pub fn run() {
             commands::set_ai_config,
             commands::ai_chat,
             commands::ai_request_log,
+            commands::enroll_start,
+            commands::enroll_wait,
+            commands::enroll_confirm,
+            commands::enroll_cancel,
+            commands::enroll_approve_device,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

@@ -87,5 +87,13 @@
   "ai.model": "Model",
   "ai.storageNote": "Stored on this device only — never in the vault",
   "ai.save": "Save AI settings",
-  "ai.saved": "Saved ✓"
+  "ai.saved": "Saved ✓",
+  "pair.codePlaceholder": "Pairing code from the new device",
+  "pair.approve": "Approve device",
+  "pair.approveSas": "Verify on both screens: {sas}. If it differs, tell the other device to cancel.",
+  "pair.receive": "Receive pairing (new device)",
+  "pair.showCode": "On your existing device, enter code: {code} — waiting…",
+  "pair.confirmSas": "Verification code: {sas}. Press 'Codes match' ONLY if the other screen shows the same.",
+  "pair.sasMatches": "Codes match — apply",
+  "pair.done": "Paired. Sync is starting."
 }
