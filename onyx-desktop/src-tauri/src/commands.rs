@@ -1415,3 +1415,9 @@ pub fn uninstall_plugin(state: State<'_, AppState>, id: String) -> CmdResult<()>
             .map_err(err)
     })
 }
+
+/// Whether the OS keychain is available (secrets stored there vs a file).
+#[tauri::command]
+pub fn keychain_available() -> bool {
+    crate::secrets::available()
+}

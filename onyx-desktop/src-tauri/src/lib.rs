@@ -11,6 +11,7 @@ mod commands;
 mod engine;
 mod protocol;
 pub mod rag;
+mod secrets;
 mod settings;
 mod state;
 pub mod sync;
@@ -77,6 +78,7 @@ pub fn run() {
             commands::plugin_registry,
             commands::install_plugin,
             commands::uninstall_plugin,
+            commands::keychain_available,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

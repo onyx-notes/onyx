@@ -112,5 +112,7 @@
   "plugins.browse": "Browse plugin registry",
   "plugins.install": "Install",
   "plugins.uninstall": "Remove",
-  "plugins.installed": "Installed ✓ (enable it above to run)"
+  "plugins.installed": "Installed ✓ (enable it above to run)",
+  "ai.keychainOn": "🔐 API key stored in your OS keychain",
+  "ai.keychainOff": "⚠ No OS keychain — key stored in an app config file"
 }

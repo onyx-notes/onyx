@@ -206,6 +206,7 @@ export const api = {
   listPlugins: () => invoke<PluginInfo[]>("list_plugins"),
   vaultStats: () => invoke<VaultStats>("vault_stats"),
   graphPayload: () => invoke<GraphPayload>("graph_payload"),
+  keychainAvailable: () => invoke<boolean>("keychain_available"),
   getAiConfig: () => invoke<AiConfig>("get_ai_config"),
   setAiConfig: (config: AiConfig) => invoke<void>("set_ai_config", { config }),
   aiChat: (messages: ChatMessage[], contextPath: string | null) =>

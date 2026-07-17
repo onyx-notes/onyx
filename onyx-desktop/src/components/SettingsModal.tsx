@@ -23,6 +23,8 @@ export default function SettingsModal(props: {
   const [aiDraft, setAiDraft] = createSignal<AiConfig | null>(null);
   void api.getAiConfig().then(setAiDraft);
   const [aiSaved, setAiSaved] = createSignal(false);
+  const [keychain, setKeychain] = createSignal(false);
+  void api.keychainAvailable().then(setKeychain);
   const updateAi = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) =>
     setAiDraft((current) => (current ? { ...current, [key]: value } : current));
   const saveAi = async () => {
@@ -313,6 +315,9 @@ export default function SettingsModal(props: {
                       value={ai().apiKey}
                       onInput={(event) => updateAi("apiKey", event.currentTarget.value)}
                     />
+                  </div>
+                  <div class="settings-imported settings-caps">
+                    {keychain() ? t("ai.keychainOn") : t("ai.keychainOff")}
                   </div>
                   <div class="settings-row">
                     <span>{t("ai.model")}</span>

@@ -46,18 +46,34 @@ fn config_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("ai.json")
 }
 
+const KEYCHAIN_KEY: &str = "ai-api-key";
+
 pub fn load_config(app_data_dir: &Path) -> AiConfig {
-    std::fs::read(config_path(app_data_dir))
+    let mut config: AiConfig = std::fs::read(config_path(app_data_dir))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Prefer the keychain; the file only holds a key on fallback systems.
+    if let Some(key) = crate::secrets::get(KEYCHAIN_KEY) {
+        config.api_key = key;
+    }
+    config
 }
 
 pub fn save_config(app_data_dir: &Path, config: &AiConfig) -> Result<(), String> {
     std::fs::create_dir_all(app_data_dir).map_err(|error| error.to_string())?;
+    // Try to move the key into the OS keychain; only fall back to the
+    // (readable) file if no keychain backend accepted it.
+    let mut on_disk = config.clone();
+    let stored = !config.api_key.is_empty() && crate::secrets::set(KEYCHAIN_KEY, &config.api_key);
+    if stored {
+        on_disk.api_key = String::new();
+    } else if config.api_key.is_empty() {
+        crate::secrets::delete(KEYCHAIN_KEY);
+    }
     std::fs::write(
         config_path(app_data_dir),
-        serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?,
+        serde_json::to_vec_pretty(&on_disk).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())
 }
