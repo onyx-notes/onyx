@@ -839,3 +839,40 @@ body.full-width .reading-view { max-width: none; }
 }
 
 .pane-active .tabbar { background: var(--onyx-bg-tertiary); }
+
+/* ---- agent panel ---- */
+
+.palette.agent { width: min(760px, 94vw); max-height: 86vh; }
+.agent-body { padding: 16px; overflow-y: auto; }
+.agent-goal { display: flex; gap: 8px; margin-bottom: 12px; }
+.agent-goal input { flex: 1; }
+
+.agent-proposal {
+  border: 1px solid var(--onyx-border);
+  border-radius: var(--onyx-radius);
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.agent-proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--onyx-bg-tertiary);
+}
+
+.agent-diff {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--onyx-font-mono);
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 260px;
+}
+
+.diff-add { color: #6cc46c; }
+.diff-del { color: var(--onyx-danger); }
+.diff-same { color: var(--onyx-text-muted); }
+
+.agent-actions { display: flex; justify-content: flex-end; margin-top: 12px; }

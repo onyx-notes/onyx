@@ -102,5 +102,11 @@
   "rag.hint": "Builds a local semantic index for vault-aware chat",
   "rag.reindex": "Index vault for AI",
   "rag.indexing": "Indexing… (embeds via your configured endpoint)",
-  "rag.done": "Indexed {chunks} chunks. AI chat now retrieves from your vault."
+  "rag.done": "Indexed {chunks} chunks. AI chat now retrieves from your vault.",
+  "agent.title": "Vault Assistant",
+  "agent.placeholder": "What should I do? (e.g. fix broken links, add tags to untagged notes)",
+  "agent.run": "Run",
+  "agent.working": "Working…",
+  "agent.apply": "Apply approved changes",
+  "agent.applied": "Applied {count} changes."
 }

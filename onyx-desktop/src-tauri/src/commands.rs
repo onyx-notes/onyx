@@ -1119,3 +1119,159 @@ pub async fn rag_reindex(app: AppHandle, state: State<'_, AppState>) -> CmdResul
         indexed_chunks,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Vault Assistant agent
+// ---------------------------------------------------------------------------
+
+/// Max tool iterations before we force a finish (runaway guard).
+const AGENT_MAX_STEPS: usize = 16;
+/// Cap search/list output fed back to the model.
+const AGENT_MAX_RESULTS: usize = 40;
+
+/// Run the agent loop for `goal`. Read/search tools execute immediately;
+/// propose_* tools ONLY accumulate — nothing is written. Returns the
+/// changeset for the user to review and apply.
+#[tauri::command]
+pub async fn agent_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    goal: String,
+) -> CmdResult<crate::agent::Changeset> {
+    let config = crate::ai::load_config(&app_data(&app)?);
+    if config.base_url.is_empty() || config.model.is_empty() {
+        return Err("configure an AI model in settings first".into());
+    }
+
+    let system = format!("{}\n\nUser goal: {goal}", crate::agent::TOOL_SPEC);
+    let mut messages = vec![crate::ai::ChatMessage {
+        role: "user".into(),
+        content: "Begin. Respond with your first tool call as JSON.".into(),
+    }];
+    let mut changeset = crate::agent::Changeset::default();
+    let log = std::sync::Arc::clone(&state.ai_log);
+
+    for _ in 0..AGENT_MAX_STEPS {
+        // One model turn (blocking HTTP off the async runtime).
+        let reply = {
+            let config = config.clone();
+            let system = system.clone();
+            let turn = messages.clone();
+            let log = std::sync::Arc::clone(&log);
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::ai::chat(&config, Some(&system), &turn, &log)
+            })
+            .await
+            .map_err(err)??
+        };
+        messages.push(crate::ai::ChatMessage {
+            role: "assistant".into(),
+            content: reply.clone(),
+        });
+
+        let tool = match crate::agent::parse_tool_call(&reply) {
+            Ok(tool) => tool,
+            Err(parse_error) => {
+                // Nudge the model back to protocol instead of failing.
+                messages.push(crate::ai::ChatMessage {
+                    role: "user".into(),
+                    content: format!("{parse_error}. Reply with ONE JSON tool-call object only."),
+                });
+                continue;
+            }
+        };
+
+        let feedback = match tool {
+            crate::agent::ToolCall::Finish { message } => {
+                changeset.finished = Some(message);
+                return Ok(changeset);
+            }
+            crate::agent::ToolCall::ProposeWrite { path, content } => {
+                changeset.log.push(format!("propose write {path}"));
+                changeset.add(crate::agent::Proposal::Write {
+                    path: path.clone(),
+                    content,
+                });
+                format!("proposal recorded for {path}")
+            }
+            crate::agent::ToolCall::ProposeDelete { path } => {
+                changeset.log.push(format!("propose delete {path}"));
+                changeset.add(crate::agent::Proposal::Delete { path: path.clone() });
+                format!("delete proposal recorded for {path}")
+            }
+            crate::agent::ToolCall::ListNotes => state.with_engine(|engine| {
+                let paths: Vec<String> = engine
+                    .index()
+                    .all_notes()
+                    .map_err(err)?
+                    .into_iter()
+                    .filter(|record| record.is_markdown)
+                    .take(AGENT_MAX_RESULTS)
+                    .map(|record| record.path.as_str().to_owned())
+                    .collect();
+                Ok(paths.join("\n"))
+            })?,
+            crate::agent::ToolCall::SearchVault { query } => state.with_engine(|engine| {
+                engine.commit_search_if_dirty().map_err(err)?;
+                let hits: Vec<String> = engine
+                    .search(&query, AGENT_MAX_RESULTS)
+                    .map_err(err)?
+                    .into_iter()
+                    .map(|hit| hit.path)
+                    .collect();
+                Ok(if hits.is_empty() {
+                    "no matches".to_owned()
+                } else {
+                    hits.join("\n")
+                })
+            })?,
+            crate::agent::ToolCall::ReadNote { path } => {
+                let note = parse_path(&path)?;
+                state.with_engine(|engine| {
+                    Ok(engine
+                        .vault()
+                        .read_text(&note)
+                        .unwrap_or_else(|_| "(note not found)".to_owned()))
+                })?
+            }
+        };
+
+        messages.push(crate::ai::ChatMessage {
+            role: "user".into(),
+            content: format!("Tool result:\n{feedback}\n\nNext tool call as JSON."),
+        });
+    }
+
+    changeset.finished =
+        Some("Reached the step limit. Review the proposals gathered so far.".to_owned());
+    Ok(changeset)
+}
+
+/// Apply approved proposals atomically (each is a normal engine write/
+/// delete, so sync + index + search all update). `approved` are the
+/// proposal indices the user checked.
+#[tauri::command]
+pub fn agent_apply(
+    state: State<'_, AppState>,
+    proposals: Vec<crate::agent::Proposal>,
+) -> CmdResult<usize> {
+    state.with_engine(|engine| {
+        let mut applied = 0;
+        for proposal in &proposals {
+            let path = onyx_core::NotePath::new(proposal.path()).map_err(err)?;
+            match proposal {
+                crate::agent::Proposal::Write { content, .. } => {
+                    engine.write_note(&path, content).map_err(err)?;
+                }
+                crate::agent::Proposal::Delete { .. } => {
+                    if engine.vault().fs().exists(&path) {
+                        engine.delete_note(&path).map_err(err)?;
+                    }
+                }
+            }
+            applied += 1;
+        }
+        engine.commit_search_if_dirty().map_err(err)?;
+        Ok(applied)
+    })
+}

@@ -89,6 +89,16 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export type Proposal =
+  | { kind: "write"; path: string; content: string }
+  | { kind: "delete"; path: string };
+
+export interface Changeset {
+  proposals: Proposal[];
+  log: string[];
+  finished: string | null;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
@@ -194,6 +204,9 @@ export const api = {
   aiRequestLog: () => invoke<AiLogEntry[]>("ai_request_log"),
   ragReindex: () => invoke<RagStatus>("rag_reindex"),
   ragStatus: () => invoke<RagStatus>("rag_status"),
+  agentRun: (goal: string) => invoke<Changeset>("agent_run", { goal }),
+  agentApply: (proposals: Proposal[]) =>
+    invoke<number>("agent_apply", { proposals }),
   setPluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_plugin_enabled", { id, enabled }),
 

@@ -5,6 +5,7 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type NoteInfo, type Settings, api } from "./api";
+import AgentPanel from "./components/AgentPanel";
 import ChatPanel from "./components/ChatPanel";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import { PluginHost, type PluginCommand } from "./plugins/host";
@@ -60,6 +61,7 @@ export default function App() {
   const [insightsOpen, setInsightsOpen] = createSignal(false);
   const [chatOpen, setChatOpen] = createSignal(false);
   const [readingMode, setReadingMode] = createSignal(false);
+  const [agentOpen, setAgentOpen] = createSignal(false);
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
   const pluginHost = new PluginHost({
@@ -89,6 +91,7 @@ export default function App() {
     },
     { id: "app.graph", name: t("graph.title"), run: () => setGraphOpen(true) },
     { id: "app.chat", name: t("chat.title"), run: () => setChatOpen(true) },
+    { id: "app.agent", name: t("agent.title"), run: () => setAgentOpen(true) },
     {
       id: "app.reading",
       name: t("reading.toggle"),
@@ -505,6 +508,13 @@ export default function App() {
 
       <Show when={chatOpen()}>
         <ChatPanel contextPath={activePath()} onClose={() => setChatOpen(false)} />
+      </Show>
+
+      <Show when={agentOpen()}>
+        <AgentPanel
+          onClose={() => setAgentOpen(false)}
+          onApplied={() => void refreshNotes()}
+        />
       </Show>
     </div>
   );

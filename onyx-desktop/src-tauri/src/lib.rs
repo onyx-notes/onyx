@@ -4,6 +4,7 @@
 //! commands (JSON control plane), `onyx://` protocol (bulk bytes), and
 //! events (tiny change notifications pushed Rust → JS).
 
+pub mod agent;
 mod ai;
 pub mod backup;
 mod commands;
@@ -71,6 +72,8 @@ pub fn run() {
             commands::enroll_approve_device,
             commands::rag_reindex,
             commands::rag_status,
+            commands::agent_run,
+            commands::agent_apply,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");
