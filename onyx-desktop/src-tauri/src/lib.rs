@@ -7,6 +7,7 @@
 pub mod agent;
 mod ai;
 pub mod backup;
+#[cfg(desktop)]
 mod capture;
 mod clipper;
 mod commands;
@@ -30,11 +31,16 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    builder
         .manage(state::AppState::default())
         .setup(|app| {
+            #[cfg(desktop)]
             crate::capture::register_quick_capture(app.handle())?;
+            #[cfg(mobile)]
+            let _ = &app;
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("onyx", protocol::handle)
@@ -97,6 +103,8 @@ pub fn run() {
             commands::publish_site,
             commands::clipper_info,
             commands::quick_capture,
+            commands::list_managed_vaults,
+            commands::create_managed_vault,
             commands::app_pause,
             commands::app_resume,
         ])

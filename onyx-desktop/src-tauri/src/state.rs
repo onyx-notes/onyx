@@ -1,11 +1,14 @@
 //! Shared app state and the watcher → engine → frontend event pump.
 
+#[cfg(desktop)]
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::RecvTimeoutError;
-use onyx_core::{CoalescerConfig, VaultEvent, VaultWatcher};
+use onyx_core::VaultWatcher;
+#[cfg(desktop)]
+use onyx_core::{CoalescerConfig, VaultEvent};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -16,6 +19,7 @@ use crate::engine::Engine;
 pub const VAULT_EVENT: &str = "onyx://vault-event";
 
 /// Debounce for tantivy commits after the last change.
+#[cfg(desktop)]
 const SEARCH_COMMIT_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Sync agent status, surfaced to the UI.
@@ -132,6 +136,7 @@ impl AppState {
 /// What the frontend receives when the vault changes under it.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "kind")]
+#[cfg_attr(mobile, allow(dead_code))]
 enum FrontendEvent {
     Created { path: String },
     Modified { path: String },
@@ -141,6 +146,8 @@ enum FrontendEvent {
 
 /// Start watching `root`, replacing any previous watcher. Watcher events
 /// flow: notify → coalescer → this pump → engine.apply_event → frontend.
+/// Desktop-only: on mobile the app is the sole writer.
+#[cfg(desktop)]
 pub fn spawn_watcher(
     app: &AppHandle,
     state: &AppState,

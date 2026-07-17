@@ -1,2 +1,14 @@
 [alias]
 xtask = "run --release --package xtask --"
+
+# Android: the Play Store's 16 KB page-size mandate (required for new apps
+# since Nov 2025). NDK r28+ defaults to this; pinned so a toolchain
+# downgrade can't silently ship a Play-rejected .so.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

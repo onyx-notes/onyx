@@ -6,7 +6,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::engine::Engine;
-use crate::state::{AppState, spawn_watcher};
+use crate::state::AppState;
+#[cfg(desktop)]
+use crate::state::spawn_watcher;
 
 /// Command errors cross IPC as strings; the frontend shows them as notices.
 type CmdResult<T> = Result<T, String>;
@@ -117,7 +119,13 @@ fn install_engine(
     let sync_config = crate::sync::load_config(engine.vault());
 
     *state.engine.lock() = Some(engine);
+    // The watcher exists for third-party editors touching vault files —
+    // a desktop reality. On mobile the app is the sole writer (index and
+    // search refresh on the write path) and notify would burn fds/battery.
+    #[cfg(desktop)]
     spawn_watcher(app, state, root).map_err(err)?;
+    #[cfg(mobile)]
+    let _ = root;
 
     // Sync was previously enabled for this vault: resume automatically.
     if let Some(config) = sync_config {
@@ -1823,4 +1831,88 @@ pub(crate) fn resume_sync_if_needed(app: &AppHandle, state: &State<'_, AppState>
     if let Err(error) = start_sync(app, state, &config) {
         tracing::warn!(%error, "sync resume failed");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Managed vaults (mobile storage model; harmless convenience on desktop)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedVault {
+    pub name: String,
+    pub path: String,
+    pub encrypted: bool,
+}
+
+fn managed_vaults_dir(app: &AppHandle) -> CmdResult<std::path::PathBuf> {
+    Ok(app.path().app_data_dir().map_err(err)?.join("vaults"))
+}
+
+/// Directory-name slug: what the user typed, constrained to fs-safe chars.
+fn vault_slug(name: &str) -> Option<String> {
+    let slug: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect();
+    (!slug.is_empty()).then_some(slug)
+}
+
+/// Vaults living in app-managed storage (`<app_data>/vaults/*`).
+#[tauri::command]
+pub fn list_managed_vaults(app: AppHandle) -> CmdResult<Vec<ManagedVault>> {
+    let dir = managed_vaults_dir(&app)?;
+    let mut vaults = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(vaults);
+    };
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        vaults.push(ManagedVault {
+            encrypted: crate::engine::is_encrypted(&entry.path()),
+            path: entry.path().to_string_lossy().into_owned(),
+            name,
+        });
+    }
+    vaults.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(vaults)
+}
+
+/// Create a vault in app-managed storage and open it. With a passphrase the
+/// vault is encrypted; without, plaintext.
+#[tauri::command]
+pub async fn create_managed_vault(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    passphrase: Option<String>,
+) -> CmdResult<VaultInfo> {
+    let slug = vault_slug(&name).ok_or("vault name must contain letters or digits")?;
+    let root = managed_vaults_dir(&app)?.join(&slug);
+    if root.exists() {
+        return Err(format!("a vault named '{slug}' already exists"));
+    }
+    std::fs::create_dir_all(&root).map_err(err)?;
+    let path_text = root.to_string_lossy().into_owned();
+    let engine = match passphrase {
+        Some(passphrase) if !passphrase.is_empty() => {
+            if passphrase.len() < 8 {
+                return Err("passphrase must be at least 8 characters".into());
+            }
+            Engine::create_encrypted(&root, &passphrase).map_err(err)?
+        }
+        _ => Engine::open(&root).map_err(err)?,
+    };
+    install_engine(&app, &state, &root, path_text, engine)
 }

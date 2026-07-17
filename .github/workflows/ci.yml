@@ -46,3 +46,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Enforce perf budgets
         run: cargo run --release -p xtask -- ci-perf /tmp/onyx-ci-corpus 10000
+
+  mobile-check:
+    name: mobile cross-compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Android target (cfg-gate rot detector)
+        run: |
+          export NDK="$ANDROID_NDK_LATEST_HOME"
+          export TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android35-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android35-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          cargo check -p onyx-desktop --target aarch64-linux-android

@@ -9,8 +9,28 @@
 
 const SERVICE: &str = "dev.onyx.app";
 
+// Mobile: no keyring backend exists; secrets fall back to file storage
+// until the onyx-secrets Keychain/Keystore plugin lands (mobile M4).
+// Honest `available() == false` keeps callers on the fallback path.
+#[cfg(mobile)]
+pub fn set(_key: &str, _value: &str) -> bool {
+    false
+}
+#[cfg(mobile)]
+pub fn get(_key: &str) -> Option<String> {
+    None
+}
+#[cfg(mobile)]
+pub fn delete(_key: &str) {}
+#[cfg(mobile)]
+pub fn available() -> bool {
+    let _ = SERVICE;
+    false
+}
+
 /// Store a secret under `key`. Returns whether the OS keychain accepted it
 /// (false → caller should fall back to file storage).
+#[cfg(desktop)]
 pub fn set(key: &str, value: &str) -> bool {
     match keyring::Entry::new(SERVICE, key) {
         Ok(entry) => entry.set_password(value).is_ok(),
@@ -19,6 +39,7 @@ pub fn set(key: &str, value: &str) -> bool {
 }
 
 /// Retrieve a secret, or `None` if absent / no keychain.
+#[cfg(desktop)]
 pub fn get(key: &str) -> Option<String> {
     keyring::Entry::new(SERVICE, key)
         .ok()
@@ -26,6 +47,7 @@ pub fn get(key: &str) -> Option<String> {
 }
 
 /// Remove a secret (best-effort).
+#[cfg(desktop)]
 pub fn delete(key: &str) {
     if let Ok(entry) = keyring::Entry::new(SERVICE, key) {
         let _ = entry.delete_credential();
@@ -33,6 +55,7 @@ pub fn delete(key: &str) {
 }
 
 /// Is a real keychain backend available on this machine?
+#[cfg(desktop)]
 pub fn available() -> bool {
     // Probe with a throwaway entry; a missing backend errors on construct
     // or on the operation.
