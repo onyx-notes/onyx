@@ -18,6 +18,7 @@ export default function Pane(props: {
   onSave: (path: string, body: string) => void;
   externalReload: number;
   scrollTarget: { offset: number; epoch: number } | null;
+  insert: { text: string; epoch: number } | null;
 }) {
   const pane = () => props.workspace.state.panes[props.paneIndex];
   const activePath = () => {
@@ -78,6 +79,11 @@ export default function Pane(props: {
                 scrollTarget={
                   props.paneIndex === props.workspace.state.activePane
                     ? props.scrollTarget
+                    : null
+                }
+                insert={
+                  props.paneIndex === props.workspace.state.activePane
+                    ? props.insert
                     : null
                 }
               />

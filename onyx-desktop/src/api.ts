@@ -138,6 +138,15 @@ export interface PluginInfo {
   enabled: boolean;
 }
 
+export interface RegistryEntry {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  capabilities: string[];
+  source: string;
+}
+
 export interface BackupReport {
   snapshotId: number;
   files: number;
@@ -209,6 +218,11 @@ export const api = {
     invoke<number>("agent_apply", { proposals }),
   setPluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_plugin_enabled", { id, enabled }),
+  pluginRegistry: (registryUrl: string) =>
+    invoke<RegistryEntry[]>("plugin_registry", { registryUrl }),
+  installPlugin: (source: string) =>
+    invoke<PluginInfo>("install_plugin", { source }),
+  uninstallPlugin: (id: string) => invoke<void>("uninstall_plugin", { id }),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
     listen<VaultEvent>("onyx://vault-event", (event) => handler(event.payload)),

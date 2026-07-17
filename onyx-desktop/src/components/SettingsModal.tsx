@@ -46,6 +46,34 @@ export default function SettingsModal(props: {
     await api.setPluginEnabled(id, enabled);
     await refetchPlugins();
   };
+  const [registry, setRegistry] = createSignal<Awaited<
+    ReturnType<typeof api.pluginRegistry>
+  > | null>(null);
+  const [registryUrl, setRegistryUrl] = createSignal(
+    "https://raw.githubusercontent.com/onyx-notes/plugins/main/registry.json",
+  );
+  const [pluginMsg, setPluginMsg] = createSignal<string | null>(null);
+  const browse = async () => {
+    setPluginMsg(null);
+    try {
+      setRegistry(await api.pluginRegistry(registryUrl().trim()));
+    } catch (error) {
+      setPluginMsg(String(error));
+    }
+  };
+  const install = async (source: string) => {
+    try {
+      const info = await api.installPlugin(source);
+      setPluginMsg(t("plugins.installed") + ` (${info.name})`);
+      await refetchPlugins();
+    } catch (error) {
+      setPluginMsg(String(error));
+    }
+  };
+  const uninstall = async (id: string) => {
+    await api.uninstallPlugin(id);
+    await refetchPlugins();
+  };
 
   const runBackup = async (name: string) => {
     setBackupResult(t("backup.running"));
@@ -337,18 +365,60 @@ export default function SettingsModal(props: {
                         [{plugin.capabilities.join(", ")}]
                       </span>
                     </span>
-                    <input
-                      type="checkbox"
-                      checked={plugin.enabled}
-                      onChange={(event) =>
-                        void togglePlugin(plugin.id, event.currentTarget.checked)
-                      }
-                    />
+                    <span>
+                      <input
+                        type="checkbox"
+                        checked={plugin.enabled}
+                        onChange={(event) =>
+                          void togglePlugin(plugin.id, event.currentTarget.checked)
+                        }
+                      />
+                      <button
+                        class="settings-button"
+                        onClick={() => void uninstall(plugin.id)}
+                      >
+                        {t("plugins.uninstall")}
+                      </button>
+                    </span>
                   </div>
                 )}
               </For>
             </Show>
             <div class="settings-imported">{t("plugins.restartHint")}</div>
+
+            <div class="settings-row">
+              <input
+                type="text"
+                value={registryUrl()}
+                onInput={(event) => setRegistryUrl(event.currentTarget.value)}
+              />
+              <button class="settings-button" onClick={() => void browse()}>
+                {t("plugins.browse")}
+              </button>
+            </div>
+            <Show when={registry()}>
+              {(entries) => (
+                <For each={entries()}>
+                  {(entry) => (
+                    <div class="settings-row">
+                      <span title={entry.capabilities.join(", ")}>
+                        {entry.name}{" "}
+                        <span class="settings-caps">[{entry.capabilities.join(", ")}]</span>
+                      </span>
+                      <button
+                        class="settings-button"
+                        onClick={() => void install(entry.source)}
+                      >
+                        {t("plugins.install")}
+                      </button>
+                    </div>
+                  )}
+                </For>
+              )}
+            </Show>
+            <Show when={pluginMsg()}>
+              {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
           </div>
 
           <div class="settings-import">

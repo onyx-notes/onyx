@@ -1,0 +1,8 @@
+{
+  "id": "daily-stats",
+  "name": "Daily Writing Stats",
+  "version": "0.1.0",
+  "description": "Show how many words you've written across all notes.",
+  "author": "Onyx",
+  "capabilities": ["vault:read","ui:commands"]
+}

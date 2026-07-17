@@ -192,6 +192,10 @@ const PLUGIN_BOOTSTRAP: &str = r#"<!doctype html><meta charset="utf-8"><script>
         return call("commands.register", { id: command.id, name: command.name });
       },
     },
+    editor: {
+      insert: (text) => call("editor.insert", { text }),
+      activePath: () => call("editor.getActivePath", {}),
+    },
     notice: (message) => call("notice", { message }),
   };
 })();

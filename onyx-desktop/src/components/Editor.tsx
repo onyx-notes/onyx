@@ -28,6 +28,8 @@ export interface EditorProps {
   reloadSignal: number;
   /** Scroll/cursor jump request (outline clicks). */
   scrollTarget: { offset: number; epoch: number } | null;
+  /** Text a plugin asked to insert at the cursor. */
+  insert: { text: string; epoch: number } | null;
 }
 
 export default function Editor(props: EditorProps) {
@@ -100,6 +102,22 @@ export default function Editor(props: EditorProps) {
         suppressChange = true;
         view.setState(buildState(props.content));
         suppressChange = false;
+        view.focus();
+      },
+    ),
+  );
+
+  // Plugin editor.insert: drop text at the current selection.
+  createEffect(
+    on(
+      () => props.insert,
+      (request) => {
+        if (!view || !request) return;
+        const at = view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: at, insert: request.text },
+          selection: { anchor: at + request.text.length },
+        });
         view.focus();
       },
     ),

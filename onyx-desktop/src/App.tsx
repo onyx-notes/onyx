@@ -64,9 +64,15 @@ export default function App() {
   const [agentOpen, setAgentOpen] = createSignal(false);
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
+  const [pluginInsert, setPluginInsert] = createSignal<{ text: string; epoch: number } | null>(
+    null,
+  );
   const pluginHost = new PluginHost({
     onNotice: (pluginId, message) => setStatus(`[${pluginId}] ${message}`),
     onCommandsChanged: (commands) => setPluginCommands(commands),
+    onEditorInsert: (text) =>
+      setPluginInsert((previous) => ({ text, epoch: (previous?.epoch ?? 0) + 1 })),
+    activePath: () => activePath(),
   });
   onCleanup(() => pluginHost.destroy());
 
@@ -411,6 +417,7 @@ export default function App() {
                   reading={readingMode()}
                   externalReload={reloadSignal()}
                   scrollTarget={scrollTarget()}
+                  insert={pluginInsert()}
                   onFollowLink={(target) => void followLink(target)}
                   onSave={(path, body) => void saveNote(path, body)}
                 />

@@ -18,6 +18,11 @@ describe("plugin capability policy", () => {
     expect(requiredCapability("commands.register")).toBe("ui:commands");
   });
 
+  it("maps editor surfaces to editor:write", () => {
+    expect(requiredCapability("editor.insert")).toBe("editor:write");
+    expect(requiredCapability("editor.getActivePath")).toBe("editor:write");
+  });
+
   it("notices are always allowed", () => {
     expect(requiredCapability("notice")).toBeNull();
   });

@@ -74,6 +74,9 @@ pub fn run() {
             commands::rag_status,
             commands::agent_run,
             commands::agent_apply,
+            commands::plugin_registry,
+            commands::install_plugin,
+            commands::uninstall_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

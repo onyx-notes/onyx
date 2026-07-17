@@ -108,5 +108,9 @@
   "agent.run": "Run",
   "agent.working": "Working…",
   "agent.apply": "Apply approved changes",
-  "agent.applied": "Applied {count} changes."
+  "agent.applied": "Applied {count} changes.",
+  "plugins.browse": "Browse plugin registry",
+  "plugins.install": "Install",
+  "plugins.uninstall": "Remove",
+  "plugins.installed": "Installed ✓ (enable it above to run)"
 }

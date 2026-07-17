@@ -1,0 +1,26 @@
+[
+  {
+    "id": "word-count",
+    "name": "Vault Word Count",
+    "description": "Counts words across every note in the vault.",
+    "author": "Onyx",
+    "capabilities": ["vault:read", "ui:commands"],
+    "source": "https://raw.githubusercontent.com/onyx-notes/plugins/main/word-count"
+  },
+  {
+    "id": "table-of-contents",
+    "name": "Table of Contents",
+    "description": "Insert a table of contents from the current note's headings.",
+    "author": "Onyx",
+    "capabilities": ["vault:read", "editor:write", "ui:commands"],
+    "source": "https://raw.githubusercontent.com/onyx-notes/plugins/main/table-of-contents"
+  },
+  {
+    "id": "daily-stats",
+    "name": "Daily Writing Stats",
+    "description": "Show how many words you've written across all notes.",
+    "author": "Onyx",
+    "capabilities": ["vault:read", "ui:commands"],
+    "source": "https://raw.githubusercontent.com/onyx-notes/plugins/main/daily-stats"
+  }
+]

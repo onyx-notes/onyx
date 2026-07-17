@@ -1275,3 +1275,143 @@ pub fn agent_apply(
         Ok(applied)
     })
 }
+
+// ---------------------------------------------------------------------------
+// Plugin registry + install
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Base URL hosting `manifest.json` and `main.js` for this plugin.
+    pub source: String,
+}
+
+/// Fetch a plugin registry index (a JSON array, obsidian-releases style).
+/// The default community index ships as a URL the user can change.
+#[tauri::command]
+pub async fn plugin_registry(registry_url: String) -> CmdResult<Vec<RegistryEntry>> {
+    let entries = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(err)?;
+        let response = client.get(&registry_url).send().map_err(err)?;
+        if !response.status().is_success() {
+            return Err(format!("registry returned {}", response.status()));
+        }
+        response
+            .json::<Vec<RegistryEntry>>()
+            .map_err(|error| format!("invalid registry JSON: {error}"))
+    })
+    .await
+    .map_err(err)??;
+    Ok(entries)
+}
+
+/// Install a plugin from a source base URL: fetch + validate manifest,
+/// fetch main.js, write into `.onyx/plugins/<id>/`. Returns the manifest.
+/// Installs disabled by default — the user reviews capabilities, then
+/// enables (a plugin never runs merely by being installed).
+#[tauri::command]
+pub async fn install_plugin(
+    state: State<'_, AppState>,
+    source: String,
+) -> CmdResult<PluginManifest> {
+    let base = source.trim_end_matches('/').to_owned();
+    let (manifest, code) = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(err)?;
+        let manifest_text = client
+            .get(format!("{base}/manifest.json"))
+            .send()
+            .map_err(err)?
+            .error_for_status()
+            .map_err(err)?
+            .text()
+            .map_err(err)?;
+        let manifest: PluginManifest = serde_json::from_str(&manifest_text)
+            .map_err(|error| format!("bad manifest: {error}"))?;
+        let code = client
+            .get(format!("{base}/main.js"))
+            .send()
+            .map_err(err)?
+            .error_for_status()
+            .map_err(err)?
+            .text()
+            .map_err(err)?;
+        Ok((manifest, code))
+    })
+    .await
+    .map_err(err)??;
+
+    // The id must be path-safe (it becomes a directory name).
+    if manifest.id.is_empty()
+        || !manifest
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(format!("unsafe plugin id: {:?}", manifest.id));
+    }
+
+    let dir = plugins_dir(&state)?.join(&manifest.id);
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).map_err(err)?,
+    )
+    .map_err(err)?;
+    std::fs::write(dir.join("main.js"), code).map_err(err)?;
+
+    // Installed disabled: force an explicit enable after capability review.
+    let mut disabled = disabled_plugins(&state)?;
+    if !disabled.contains(&manifest.id) {
+        disabled.push(manifest.id.clone());
+        state.with_engine(|engine| {
+            let path = onyx_core::NotePath::new(".onyx/plugins-disabled.json").expect("static");
+            engine
+                .vault()
+                .fs()
+                .write_atomic(&path, &serde_json::to_vec_pretty(&disabled).map_err(err)?)
+                .map_err(err)
+        })?;
+    }
+    Ok(manifest)
+}
+
+/// Uninstall a plugin: remove its directory and disabled-list entry.
+#[tauri::command]
+pub fn uninstall_plugin(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("invalid plugin id".into());
+    }
+    let dir = plugins_dir(&state)?.join(&id);
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir).map_err(err)?;
+    }
+    let mut disabled = disabled_plugins(&state)?;
+    disabled.retain(|entry| entry != &id);
+    state.with_engine(|engine| {
+        let path = onyx_core::NotePath::new(".onyx/plugins-disabled.json").expect("static");
+        engine
+            .vault()
+            .fs()
+            .write_atomic(&path, &serde_json::to_vec_pretty(&disabled).map_err(err)?)
+            .map_err(err)
+    })
+}

@@ -34,6 +34,9 @@ export function requiredCapability(method: string): string | null | undefined {
       return "vault:write";
     case "commands.register":
       return "ui:commands";
+    case "editor.insert":
+    case "editor.getActivePath":
+      return "editor:write";
     case "notice":
       return null;
     default:
@@ -49,6 +52,8 @@ export class PluginHost {
     private callbacks: {
       onNotice: (pluginId: string, message: string) => void;
       onCommandsChanged: (commands: PluginCommand[]) => void;
+      onEditorInsert: (text: string) => void;
+      activePath: () => string | null;
     },
   ) {
     window.addEventListener("message", this.onMessage);
@@ -153,6 +158,11 @@ export class PluginHost {
         this.callbacks.onCommandsChanged([...this.commands.values()]);
         return null;
       }
+      case "editor.insert":
+        this.callbacks.onEditorInsert(String(params["text"]));
+        return null;
+      case "editor.getActivePath":
+        return this.callbacks.activePath();
       case "notice":
         this.callbacks.onNotice(pluginId, String(params["message"]));
         return null;

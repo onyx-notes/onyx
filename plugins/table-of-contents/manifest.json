@@ -1,0 +1,8 @@
+{
+  "id": "table-of-contents",
+  "name": "Table of Contents",
+  "version": "0.1.0",
+  "description": "Insert a table of contents from the current note's headings.",
+  "author": "Onyx",
+  "capabilities": ["vault:read","editor:write","ui:commands"]
+}
