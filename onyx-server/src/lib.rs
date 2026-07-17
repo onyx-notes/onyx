@@ -13,17 +13,41 @@
 mod auth;
 mod db;
 mod routes;
+mod ws;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::{get, post};
+use parking_lot::Mutex;
 
 pub use db::Db;
 
 pub struct ServerState {
     pub db: Db,
+    /// Per-vault live-push hubs: subscribers get the new head seq on every
+    /// append and pull the ops over HTTP (tiny frames, one delivery path).
+    hubs: Mutex<HashMap<[u8; 16], tokio::sync::broadcast::Sender<u64>>>,
+}
+
+impl ServerState {
+    fn new(db: Db) -> Self {
+        Self {
+            db,
+            hubs: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The broadcast hub for a vault (created on first use).
+    pub(crate) fn hub(&self, vault: [u8; 16]) -> tokio::sync::broadcast::Sender<u64> {
+        self.hubs
+            .lock()
+            .entry(vault)
+            .or_insert_with(|| tokio::sync::broadcast::channel(64).0)
+            .clone()
+    }
 }
 
 /// Build the application router. Separated from `main` so tests drive it
@@ -37,17 +61,16 @@ pub fn app(state: Arc<ServerState>) -> Router {
         .route("/v1/vaults", post(routes::join_vault))
         .route("/v1/vaults/{vault}/ops", post(routes::push_ops))
         .route("/v1/vaults/{vault}/ops", get(routes::pull_ops))
+        .route("/v1/vaults/{vault}/ws", get(ws::live))
         .with_state(state)
 }
 
 pub fn state(data_dir: &Path) -> Result<Arc<ServerState>, db::DbError> {
-    Ok(Arc::new(ServerState {
-        db: Db::open(&data_dir.join("onyx-server.db"))?,
-    }))
+    Ok(Arc::new(ServerState::new(Db::open(
+        &data_dir.join("onyx-server.db"),
+    )?)))
 }
 
 pub fn state_in_memory() -> Result<Arc<ServerState>, db::DbError> {
-    Ok(Arc::new(ServerState {
-        db: Db::open_in_memory()?,
-    }))
+    Ok(Arc::new(ServerState::new(Db::open_in_memory()?)))
 }

@@ -180,3 +180,41 @@ fn two_devices_full_stack_sync() {
         assert_eq!(engine.index().note_count().unwrap(), 1);
     }
 }
+
+#[test]
+fn live_push_wakes_subscribers_immediately() {
+    let server = start_server();
+    let vault_id = [3u8; 16];
+
+    let mut alice = device(&server, &[("note.md", "hello")]);
+    let mut bob = device(&server, &[]);
+    alice.client.join(vault_id).unwrap();
+    bob.client.join(vault_id).unwrap();
+
+    // Bob subscribes to live push.
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (wake_tx, wake_rx) = crossbeam_channel::bounded::<()>(1);
+    let token = bob.client.ensure_auth().unwrap();
+    onyx_desktop_lib::sync::spawn_ws_waker(
+        bob.client.base_url(),
+        vault_id,
+        token,
+        wake_tx,
+        std::sync::Arc::clone(&alive),
+    );
+    // Give the WS a moment to connect.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Alice pushes; Bob's waker must fire well under a second.
+    alice.cycle(vault_id);
+    let woken = wake_rx.recv_timeout(std::time::Duration::from_secs(3));
+    assert!(woken.is_ok(), "live push did not wake the subscriber");
+
+    // The nudge leads to a cycle that materializes the note.
+    let changed = bob.cycle(vault_id);
+    assert_eq!(changed, vec!["note.md".to_owned()]);
+
+    // Clean shutdown: the waker exits promptly once alive clears.
+    alive.store(false, std::sync::atomic::Ordering::Relaxed);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+}

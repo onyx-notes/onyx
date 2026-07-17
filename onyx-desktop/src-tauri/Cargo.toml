@@ -23,6 +23,7 @@ onyx-crypto = { workspace = true }
 onyx-proto = { workspace = true }
 onyx-sync = { workspace = true }
 reqwest = { workspace = true }
+tungstenite = { workspace = true }
 data-encoding = { workspace = true }
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }

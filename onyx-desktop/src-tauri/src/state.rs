@@ -200,6 +200,19 @@ pub fn spawn_sync_agent(
                 }
             }
 
+            // Live push: wake immediately when the server head advances.
+            let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let (wake_sender, wake_receiver) = crossbeam_channel::bounded::<()>(1);
+            if let Ok(token) = client.ensure_auth() {
+                crate::sync::spawn_ws_waker(
+                    client.base_url(),
+                    vault_id,
+                    token,
+                    wake_sender,
+                    Arc::clone(&alive),
+                );
+            }
+
             loop {
                 match crate::sync::sync_cycle(&engine, &mut client, vault_id) {
                     Ok(changed) => {
@@ -225,10 +238,26 @@ pub fn spawn_sync_agent(
                         info.last_error = Some(error.to_string());
                     }
                 }
-                match stop_receiver.recv_timeout(SYNC_INTERVAL) {
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                    // Stopped (or state dropped): agent is done.
-                    _ => return,
+                crossbeam_channel::select! {
+                    recv(stop_receiver) -> _ => {
+                        // Stopped (or state dropped): agent + waker are done.
+                        alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    recv(wake_receiver) -> message => {
+                        // Live-push nudge → immediate cycle. A closed wake
+                        // channel (waker died) falls back to interval polling.
+                        if message.is_err() {
+                            match stop_receiver.recv_timeout(SYNC_INTERVAL) {
+                                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                                _ => {
+                                    alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    default(SYNC_INTERVAL) => {}
                 }
             }
         });

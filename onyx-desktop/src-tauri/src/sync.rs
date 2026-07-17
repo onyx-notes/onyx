@@ -224,6 +224,10 @@ impl SyncClient {
         self.token = None;
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base
+    }
+
     pub fn join(&mut self, vault_id: [u8; 16]) -> Result<(), SyncSetupError> {
         let token = self.ensure_auth()?;
         self.post_json(
@@ -291,6 +295,108 @@ impl SyncClient {
             .map_err(|error| SyncSetupError::Http(error.to_string()))?;
         onyx_proto::decode(&bytes).map_err(|error| SyncSetupError::Server(error.to_string()))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Live-push waker
+// ---------------------------------------------------------------------------
+
+/// Connect to the server's live-push WebSocket and signal `wake` whenever
+/// the vault head advances. Reconnects with backoff; exits when `alive`
+/// clears. Runs on its own thread (blocking tungstenite).
+pub fn spawn_ws_waker(
+    server_url: &str,
+    vault_id: [u8; 16],
+    token: String,
+    wake: crossbeam_channel::Sender<()>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+
+    let ws_base = if let Some(rest) = server_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = server_url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("ws://{server_url}")
+    };
+    let url = format!(
+        "{}/v1/vaults/{}/ws",
+        ws_base.trim_end_matches('/'),
+        HEXLOWER.encode(&vault_id)
+    );
+
+    let _ = std::thread::Builder::new()
+        .name("onyx-ws-waker".into())
+        .spawn(move || {
+            while alive.load(Ordering::Relaxed) {
+                match connect_ws(&url, &token) {
+                    Ok(mut socket) => {
+                        tracing::debug!("live-push connected");
+                        loop {
+                            if !alive.load(Ordering::Relaxed) {
+                                let _ = socket.close(None);
+                                return;
+                            }
+                            match socket.read() {
+                                Ok(message) if message.is_text() => {
+                                    let _ = wake.try_send(());
+                                }
+                                Ok(_) => {}
+                                Err(tungstenite::Error::Io(error))
+                                    if matches!(
+                                        error.kind(),
+                                        std::io::ErrorKind::WouldBlock
+                                            | std::io::ErrorKind::TimedOut
+                                    ) =>
+                                {
+                                    continue; // read timeout: liveness check tick
+                                }
+                                Err(_) => break, // reconnect
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "live-push connect failed; will retry");
+                    }
+                }
+                // Backoff before reconnecting, staying responsive to stop.
+                for _ in 0..10 {
+                    if !alive.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+        });
+}
+
+type WsSocket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+
+fn connect_ws(url: &str, token: &str) -> Result<WsSocket, Box<tungstenite::Error>> {
+    use tungstenite::client::IntoClientRequest;
+
+    let mut request = url.into_client_request().map_err(Box::new)?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}")
+            .parse()
+            .expect("token is valid ASCII"),
+    );
+    let (socket, _response) = tungstenite::connect(request).map_err(Box::new)?;
+    // A short read timeout lets the loop notice shutdown promptly.
+    match socket.get_ref() {
+        tungstenite::stream::MaybeTlsStream::Plain(stream) => {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        }
+        tungstenite::stream::MaybeTlsStream::Rustls(tls) => {
+            let _ = tls
+                .get_ref()
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        }
+        _ => {}
+    }
+    Ok(socket)
 }
 
 // ---------------------------------------------------------------------------

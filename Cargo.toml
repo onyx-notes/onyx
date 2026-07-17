@@ -70,12 +70,13 @@ tauri-build = "2"
 # sync / server
 loro = "1"
 postcard = { version = "1", features = ["alloc"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tower = "0.5"
 http-body-util = "0.1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 # errors / logging
 thiserror = "2"

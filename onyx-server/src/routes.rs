@@ -108,6 +108,9 @@ pub async fn push_ops(
         .append_ops(vault, device, &push.ops)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
+    // Wake live-push subscribers (no receivers = no-op).
+    let _ = state.hub(vault).send(head_seq);
+
     onyx_proto::encode(&onyx_proto::PushAck { head_seq })
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
