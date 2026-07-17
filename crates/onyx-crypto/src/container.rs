@@ -40,11 +40,34 @@ pub fn encrypt(vault_key: &VaultKey, plaintext: &[u8]) -> Vec<u8> {
     encrypt_with(vault_key, plaintext, CHUNK_SIZE_DEFAULT)
 }
 
+/// Convergent encryption: the file id derives from the content, so the
+/// same plaintext under the same key always yields the same ciphertext.
+/// This is what makes content-addressed backup chunks dedupe and lets
+/// unchanged files skip re-upload. Trade-off (standard for convergent
+/// schemes): equal content is detectable as equal *within one key's
+/// domain* — acceptable for a user's own backup store.
+pub fn encrypt_convergent(vault_key: &VaultKey, plaintext: &[u8]) -> Vec<u8> {
+    let derivation = vault_key.derive(
+        "onyx-crypto 2026-07 convergent file id v1",
+        &blake3::hash(plaintext).as_bytes()[..],
+    );
+    let file_id: [u8; 16] = derivation[..16].try_into().expect("length");
+    encrypt_with_file_id(vault_key, plaintext, CHUNK_SIZE_DEFAULT, file_id)
+}
+
 /// Encrypt with an explicit chunk size (exposed for tests and for callers
 /// with unusual size/latency trade-offs).
 pub fn encrypt_with(vault_key: &VaultKey, plaintext: &[u8], chunk_size: u32) -> Vec<u8> {
+    encrypt_with_file_id(vault_key, plaintext, chunk_size, random_bytes())
+}
+
+fn encrypt_with_file_id(
+    vault_key: &VaultKey,
+    plaintext: &[u8],
+    chunk_size: u32,
+    file_id: [u8; 16],
+) -> Vec<u8> {
     assert!(chunk_size > 0, "chunk size must be positive");
-    let file_id: [u8; 16] = random_bytes();
 
     let mut header = Vec::with_capacity(HEADER_LEN);
     header.extend_from_slice(MAGIC);
@@ -262,5 +285,24 @@ mod tests {
         let plaintext = vec![1u8; CHUNK_SIZE_DEFAULT as usize + 17];
         let sealed = encrypt(&key(), &plaintext);
         assert_eq!(decrypt(&key(), &sealed).unwrap(), plaintext);
+    }
+}
+
+#[cfg(test)]
+mod convergent_tests {
+    use super::*;
+
+    #[test]
+    fn convergent_is_deterministic_and_decrypts() {
+        let key = VaultKey::from_bytes([5; 32]);
+        let first = encrypt_convergent(&key, b"same content");
+        let second = encrypt_convergent(&key, b"same content");
+        assert_eq!(first, second, "same content must yield same ciphertext");
+        assert_eq!(decrypt(&key, &first).unwrap(), b"same content");
+
+        let other_content = encrypt_convergent(&key, b"other content");
+        assert_ne!(first, other_content);
+        let other_key = encrypt_convergent(&VaultKey::from_bytes([6; 32]), b"same content");
+        assert_ne!(first, other_key, "different keys must not converge");
     }
 }

@@ -126,6 +126,13 @@ fn install_engine(
         }
     }
 
+    // Periodic backups, if configured.
+    let backup_config =
+        state.with_engine(|engine| Ok(crate::backup::load_config(engine.vault())))?;
+    if backup_config.auto_interval_hours > 0 && !backup_config.destinations.is_empty() {
+        crate::state::spawn_backup_timer(state, backup_config.auto_interval_hours);
+    }
+
     Ok(VaultInfo {
         root: path,
         note_count,
@@ -467,4 +474,73 @@ pub fn sync_join(
 #[tauri::command]
 pub fn sync_status(state: State<'_, AppState>) -> crate::state::SyncStatusInfo {
     state.sync_status.lock().clone()
+}
+
+// ---------------------------------------------------------------------------
+// Backup commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn get_backup_config(state: State<'_, AppState>) -> CmdResult<crate::backup::BackupConfig> {
+    state.with_engine(|engine| Ok(crate::backup::load_config(engine.vault())))
+}
+
+#[tauri::command]
+pub fn set_backup_config(
+    state: State<'_, AppState>,
+    config: crate::backup::BackupConfig,
+) -> CmdResult<()> {
+    state.with_engine(|engine| crate::backup::save_config(engine.vault(), &config).map_err(err))
+}
+
+/// Run a backup to the named destination now. Gathers file content under
+/// short engine locks, then encrypts + transfers without holding any lock.
+#[tauri::command]
+pub async fn backup_now(
+    state: State<'_, AppState>,
+    destination: String,
+) -> CmdResult<crate::backup::BackupReport> {
+    let (key, files, dest) = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        let config = crate::backup::load_config(engine.vault());
+        let dest = config
+            .destinations
+            .into_iter()
+            .find(|candidate| candidate.name == destination)
+            .ok_or_else(|| format!("unknown destination: {destination}"))?;
+        let key =
+            crate::backup::backup_key(engine.root(), engine.crypto_key().as_ref()).map_err(err)?;
+        let mut files = Vec::new();
+        for record in engine.index().all_notes().map_err(err)? {
+            let content = engine.vault().read_bytes(&record.path).map_err(err)?;
+            files.push((record.path.as_str().to_owned(), content));
+        }
+        (key, files, dest)
+    };
+    // Encryption + upload run on a blocking worker (no engine lock held).
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::backup::run_backup(&key, &files, &dest).map_err(err)
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+pub async fn list_backup_snapshots(
+    state: State<'_, AppState>,
+    destination: String,
+) -> CmdResult<Vec<u64>> {
+    let dest = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        crate::backup::load_config(engine.vault())
+            .destinations
+            .into_iter()
+            .find(|candidate| candidate.name == destination)
+            .ok_or_else(|| format!("unknown destination: {destination}"))?
+    };
+    tauri::async_runtime::spawn_blocking(move || crate::backup::list_snapshots(&dest).map_err(err))
+        .await
+        .map_err(err)?
 }

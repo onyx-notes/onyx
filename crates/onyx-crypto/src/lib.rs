@@ -33,7 +33,7 @@ mod filename;
 mod kdf;
 mod keys;
 
-pub use container::{CHUNK_SIZE_DEFAULT, decrypt, encrypt, encrypt_with};
+pub use container::{CHUNK_SIZE_DEFAULT, decrypt, encrypt, encrypt_convergent, encrypt_with};
 pub use filename::{decrypt_name, encrypt_name};
 pub use kdf::KdfParams;
 pub use keys::{Keyfile, VaultKey};

@@ -2,7 +2,7 @@
 // `.obsidian` importer with its review flow (imported keys are listed,
 // nothing saves without confirmation).
 
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createResource, createSignal } from "solid-js";
 
 import { type Settings, api } from "../api";
 import { t } from "../i18n";
@@ -17,6 +17,23 @@ export default function SettingsModal(props: {
   const [syncUrl, setSyncUrl] = createSignal("");
   const [syncCodeInput, setSyncCodeInput] = createSignal("");
   const [syncResult, setSyncResult] = createSignal<string | null>(null);
+  const [backupResult, setBackupResult] = createSignal<string | null>(null);
+  const [backupConfig] = createResource(() => api.getBackupConfig());
+
+  const runBackup = async (name: string) => {
+    setBackupResult(t("backup.running"));
+    try {
+      const report = await api.backupNow(name);
+      setBackupResult(
+        t("backup.done", {
+          uploaded: report.uploaded,
+          skipped: report.skipped,
+        }),
+      );
+    } catch (error) {
+      setBackupResult(String(error));
+    }
+  };
 
   const enableSync = async () => {
     try {
@@ -140,6 +157,32 @@ export default function SettingsModal(props: {
               </button>
             </div>
             <Show when={syncResult()}>
+              {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+          </div>
+
+          <div class="settings-import">
+            <Show
+              when={(backupConfig()?.destinations.length ?? 0) > 0}
+              fallback={<div class="settings-imported">{t("backup.none")}</div>}
+            >
+              <For each={backupConfig()?.destinations ?? []}>
+                {(destination) => (
+                  <div class="settings-row">
+                    <span>
+                      {destination.name} ({destination.kind})
+                    </span>
+                    <button
+                      class="settings-button"
+                      onClick={() => void runBackup(destination.name)}
+                    >
+                      {t("backup.now")}
+                    </button>
+                  </div>
+                )}
+              </For>
+            </Show>
+            <Show when={backupResult()}>
               {(message) => <div class="settings-imported">{message()}</div>}
             </Show>
           </div>

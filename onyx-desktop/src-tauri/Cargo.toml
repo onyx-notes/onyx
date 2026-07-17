@@ -21,6 +21,8 @@ crossbeam-channel = { workspace = true }
 onyx-core = { workspace = true }
 onyx-crypto = { workspace = true }
 onyx-proto = { workspace = true }
+opendal = { workspace = true }
+tokio = { workspace = true }
 onyx-sync = { workspace = true }
 reqwest = { workspace = true }
 tungstenite = { workspace = true }
@@ -40,4 +42,3 @@ tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 onyx-server = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }

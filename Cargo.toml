@@ -77,6 +77,7 @@ http-body-util = "0.1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+opendal = { version = "0.54", default-features = false, features = ["services-fs", "services-s3", "services-webdav"] }
 
 # errors / logging
 thiserror = "2"

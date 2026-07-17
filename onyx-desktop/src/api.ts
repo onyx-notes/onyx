@@ -65,6 +65,25 @@ export interface SyncEnabled {
   code: string | null;
 }
 
+export interface BackupDestination {
+  name: string;
+  kind: string;
+  config: Record<string, string>;
+}
+
+export interface BackupConfig {
+  destinations: BackupDestination[];
+  autoIntervalHours: number;
+}
+
+export interface BackupReport {
+  snapshotId: number;
+  files: number;
+  uploaded: number;
+  skipped: number;
+  bytesUploaded: number;
+}
+
 export const api = {
   vaultStatus: (path: string) => invoke<string>("vault_status", { path }),
   openVault: (path: string, passphrase?: string) =>
@@ -99,6 +118,13 @@ export const api = {
   syncJoin: (serverUrl: string, code: string) =>
     invoke<void>("sync_join", { serverUrl, code }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
+  getBackupConfig: () => invoke<BackupConfig>("get_backup_config"),
+  setBackupConfig: (config: BackupConfig) =>
+    invoke<void>("set_backup_config", { config }),
+  backupNow: (destination: string) =>
+    invoke<BackupReport>("backup_now", { destination }),
+  listBackupSnapshots: (destination: string) =>
+    invoke<number[]>("list_backup_snapshots", { destination }),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
     listen<VaultEvent>("onyx://vault-event", (event) => handler(event.payload)),

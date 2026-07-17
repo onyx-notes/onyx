@@ -37,6 +37,8 @@ pub struct AppState {
     /// Dropping the sender stops the sync agent loop.
     sync_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
     pub sync_status: Arc<Mutex<SyncStatusInfo>>,
+    /// Dropping the sender stops the auto-backup timer.
+    backup_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
 }
 
 impl AppState {
@@ -44,6 +46,7 @@ impl AppState {
     /// (vault keys zeroize on drop).
     pub fn lock_vault(&self) {
         *self.sync_stop.lock() = None;
+        *self.backup_stop.lock() = None;
         *self.watcher.lock() = None;
         *self.engine.lock() = None;
         *self.sync_status.lock() = SyncStatusInfo::default();
@@ -258,6 +261,69 @@ pub fn spawn_sync_agent(
                         }
                     }
                     default(SYNC_INTERVAL) => {}
+                }
+            }
+        });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-backup timer
+// ---------------------------------------------------------------------------
+
+/// Start the periodic backup timer (interval from the vault's backup
+/// config; call only when interval > 0). Runs every destination each tick.
+pub fn spawn_backup_timer(state: &AppState, interval_hours: u32) {
+    let (stop_sender, stop_receiver) = crossbeam_channel::bounded::<()>(0);
+    *state.backup_stop.lock() = Some(stop_sender);
+    let engine = Arc::clone(&state.engine);
+    let interval = Duration::from_secs(u64::from(interval_hours) * 3600);
+
+    let _ = std::thread::Builder::new()
+        .name("onyx-backup-timer".into())
+        .spawn(move || {
+            loop {
+                match stop_receiver.recv_timeout(interval) {
+                    Err(RecvTimeoutError::Timeout) => {}
+                    _ => return, // stopped or vault switched
+                }
+                let gathered = {
+                    let guard = engine.lock();
+                    let Some(engine) = guard.as_ref() else { return };
+                    let config = crate::backup::load_config(engine.vault());
+                    let key = match crate::backup::backup_key(
+                        engine.root(),
+                        engine.crypto_key().as_ref(),
+                    ) {
+                        Ok(key) => key,
+                        Err(error) => {
+                            tracing::warn!(%error, "backup key unavailable");
+                            continue;
+                        }
+                    };
+                    let mut files = Vec::new();
+                    let records = engine.index().all_notes().unwrap_or_default();
+                    for record in records {
+                        if let Ok(content) = engine.vault().read_bytes(&record.path) {
+                            files.push((record.path.as_str().to_owned(), content));
+                        }
+                    }
+                    (config, key, files)
+                };
+                let (config, key, files) = gathered;
+                for destination in &config.destinations {
+                    match crate::backup::run_backup(&key, &files, destination) {
+                        Ok(report) => tracing::info!(
+                            destination = %destination.name,
+                            uploaded = report.uploaded,
+                            skipped = report.skipped,
+                            "auto-backup complete"
+                        ),
+                        Err(error) => tracing::warn!(
+                            destination = %destination.name,
+                            %error,
+                            "auto-backup failed"
+                        ),
+                    }
                 }
             }
         });
