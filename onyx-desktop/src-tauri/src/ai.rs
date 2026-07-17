@@ -25,6 +25,9 @@ pub struct AiConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// Embedding model for RAG (e.g. "text-embedding-3-small",
+    /// "nomic-embed-text"). Empty disables vault-context retrieval.
+    pub embed_model: String,
 }
 
 impl Default for AiConfig {
@@ -34,6 +37,7 @@ impl Default for AiConfig {
             base_url: String::new(),
             api_key: String::new(),
             model: String::new(),
+            embed_model: String::new(),
         }
     }
 }
@@ -211,6 +215,7 @@ mod tests {
             base_url: "https://api.anthropic.com".into(),
             api_key: "sk-test".into(),
             model: "claude-sonnet-5".into(),
+            embed_model: "text-embedding-3-small".into(),
         };
         save_config(dir.path(), &config).unwrap();
         let loaded = load_config(dir.path());

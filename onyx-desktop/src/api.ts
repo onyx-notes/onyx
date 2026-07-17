@@ -81,6 +81,12 @@ export interface AiConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  embedModel: string;
+}
+
+export interface RagStatus {
+  configured: boolean;
+  indexedChunks: number;
 }
 
 export interface ChatMessage {
@@ -186,6 +192,8 @@ export const api = {
   aiChat: (messages: ChatMessage[], contextPath: string | null) =>
     invoke<string>("ai_chat", { messages, contextPath }),
   aiRequestLog: () => invoke<AiLogEntry[]>("ai_request_log"),
+  ragReindex: () => invoke<RagStatus>("rag_reindex"),
+  ragStatus: () => invoke<RagStatus>("rag_status"),
   setPluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_plugin_enabled", { id, enabled }),
 

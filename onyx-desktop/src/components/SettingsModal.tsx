@@ -31,6 +31,16 @@ export default function SettingsModal(props: {
     await api.setAiConfig(draft);
     setAiSaved(true);
   };
+  const [ragResult, setRagResult] = createSignal<string | null>(null);
+  const reindexRag = async () => {
+    setRagResult(t("rag.indexing"));
+    try {
+      const status = await api.ragReindex();
+      setRagResult(t("rag.done", { chunks: status.indexedChunks }));
+    } catch (error) {
+      setRagResult(String(error));
+    }
+  };
 
   const togglePlugin = async (id: string, enabled: boolean) => {
     await api.setPluginEnabled(id, enabled);
@@ -284,6 +294,24 @@ export default function SettingsModal(props: {
                       onInput={(event) => updateAi("model", event.currentTarget.value)}
                     />
                   </div>
+                  <div class="settings-row">
+                    <span>{t("ai.embedModel")}</span>
+                    <input
+                      type="text"
+                      placeholder="text-embedding-3-small / nomic-embed-text"
+                      value={ai().embedModel}
+                      onInput={(event) => updateAi("embedModel", event.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="settings-row">
+                    <span class="settings-caps">{t("rag.hint")}</span>
+                    <button class="settings-button" onClick={() => void reindexRag()}>
+                      {t("rag.reindex")}
+                    </button>
+                  </div>
+                  <Show when={ragResult()}>
+                    {(message) => <div class="settings-imported">{message()}</div>}
+                  </Show>
                   <div class="settings-row">
                     <span class="settings-caps">{t("ai.storageNote")}</span>
                     <button class="settings-button" onClick={() => void saveAi()}>

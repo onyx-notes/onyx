@@ -1000,3 +1000,122 @@ pub fn enroll_approve_device(
     let sas = crate::sync::enroll_approve(&mut client, &code, vault_id, &op_key).map_err(err)?;
     Ok(EnrollApproveResult { sas })
 }
+
+// ---------------------------------------------------------------------------
+// RAG: local semantic index over the vault
+// ---------------------------------------------------------------------------
+
+const EMBEDDINGS_PATH: &str = ".onyx/embeddings.json";
+const CHUNK_TARGET_CHARS: usize = 1200;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RagStatus {
+    pub configured: bool,
+    pub indexed_chunks: usize,
+}
+
+fn load_vector_store(state: &State<'_, AppState>) -> crate::rag::VectorStore {
+    state
+        .with_engine(|engine| {
+            let path = onyx_core::NotePath::new(EMBEDDINGS_PATH).expect("static");
+            Ok(engine
+                .vault()
+                .fs()
+                .read(&path)
+                .ok()
+                .and_then(|bytes| crate::rag::VectorStore::from_bytes(&bytes).ok())
+                .unwrap_or_default())
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn rag_status(app: AppHandle, state: State<'_, AppState>) -> CmdResult<RagStatus> {
+    let config = crate::ai::load_config(&app_data(&app)?);
+    Ok(RagStatus {
+        configured: !config.embed_model.is_empty() && !config.base_url.is_empty(),
+        indexed_chunks: load_vector_store(&state).len(),
+    })
+}
+
+/// (Re)build the semantic index: chunk every markdown note, embed changed
+/// notes via the configured endpoint, persist. Incremental — unchanged
+/// notes keep their vectors.
+#[tauri::command]
+pub async fn rag_reindex(app: AppHandle, state: State<'_, AppState>) -> CmdResult<RagStatus> {
+    let config = crate::ai::load_config(&app_data(&app)?);
+    if config.embed_model.is_empty() || config.base_url.is_empty() {
+        return Err("configure an embedding model in AI settings first".into());
+    }
+
+    // Gather note contents + current index under a short lock.
+    let (notes, mut store): (Vec<(String, String)>, crate::rag::VectorStore) = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        let store = load_vector_store(&state);
+        let mut notes = Vec::new();
+        for record in engine.index().all_notes().map_err(err)? {
+            if record.is_markdown {
+                let content = engine.vault().read_text(&record.path).map_err(err)?;
+                notes.push((record.path.as_str().to_owned(), content));
+            }
+        }
+        (notes, store)
+    };
+
+    // Prune notes that no longer exist.
+    let live: std::collections::HashSet<&str> =
+        notes.iter().map(|(path, _)| path.as_str()).collect();
+    for path in store.indexed_paths() {
+        if !live.contains(path.as_str()) {
+            store.remove_note(&path);
+        }
+    }
+
+    let base = config.base_url.clone();
+    let key = config.api_key.clone();
+    let model = config.embed_model.clone();
+
+    // Embed note-by-note off the lock (network-bound).
+    let store = tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+        let already = store.indexed_paths();
+        let mut store = store;
+        for (path, content) in &notes {
+            // Skip notes already indexed this session (full incremental
+            // hashing lands with the background indexer; re-embedding an
+            // unchanged note is only wasted network, never wrong).
+            if already.contains(path) {
+                continue;
+            }
+            let chunks = crate::rag::chunk_note(path, content, CHUNK_TARGET_CHARS);
+            if chunks.is_empty() {
+                continue;
+            }
+            let texts: Vec<String> = chunks.iter().map(|chunk| chunk.text.clone()).collect();
+            let vectors = crate::rag::embed_texts(&base, &key, &model, &texts)?;
+            let embedded = chunks
+                .into_iter()
+                .zip(vectors)
+                .map(|(chunk, vector)| crate::rag::Embedded { chunk, vector })
+                .collect();
+            store.set_note(path, embedded);
+        }
+        Ok(store)
+    })
+    .await
+    .map_err(err)??;
+
+    // Persist.
+    let indexed_chunks = store.len();
+    let bytes = store.to_bytes().map_err(err)?;
+    state.with_engine(|engine| {
+        let path = onyx_core::NotePath::new(EMBEDDINGS_PATH).expect("static");
+        engine.vault().fs().write_atomic(&path, &bytes).map_err(err)
+    })?;
+
+    Ok(RagStatus {
+        configured: true,
+        indexed_chunks,
+    })
+}

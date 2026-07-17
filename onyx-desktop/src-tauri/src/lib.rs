@@ -9,6 +9,7 @@ pub mod backup;
 mod commands;
 mod engine;
 mod protocol;
+pub mod rag;
 mod settings;
 mod state;
 pub mod sync;
@@ -68,6 +69,8 @@ pub fn run() {
             commands::enroll_confirm,
             commands::enroll_cancel,
             commands::enroll_approve_device,
+            commands::rag_reindex,
+            commands::rag_status,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");
