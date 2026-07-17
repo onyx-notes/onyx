@@ -10,6 +10,7 @@ import ChatPanel from "./components/ChatPanel";
 import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
 import { PluginHost, type PluginCommand } from "./plugins/host";
 import GraphView from "./components/GraphView";
+import HistoryPanel from "./components/HistoryPanel";
 import Insights from "./components/Insights";
 import Pane from "./components/Pane";
 import QuickSwitcher from "./components/QuickSwitcher";
@@ -62,6 +63,7 @@ export default function App() {
   const [chatOpen, setChatOpen] = createSignal(false);
   const [readingMode, setReadingMode] = createSignal(false);
   const [agentOpen, setAgentOpen] = createSignal(false);
+  const [historyOpen, setHistoryOpen] = createSignal(false);
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
   const [pluginInsert, setPluginInsert] = createSignal<{ text: string; epoch: number } | null>(
@@ -98,6 +100,13 @@ export default function App() {
     { id: "app.graph", name: t("graph.title"), run: () => setGraphOpen(true) },
     { id: "app.chat", name: t("chat.title"), run: () => setChatOpen(true) },
     { id: "app.agent", name: t("agent.title"), run: () => setAgentOpen(true) },
+    {
+      id: "app.history",
+      name: t("history.title"),
+      run: () => {
+        if (activePath() !== null) setHistoryOpen(true);
+      },
+    },
     {
       id: "app.reading",
       name: t("reading.toggle"),
@@ -522,6 +531,16 @@ export default function App() {
           onClose={() => setAgentOpen(false)}
           onApplied={() => void refreshNotes()}
         />
+      </Show>
+
+      <Show when={historyOpen() && activePath()}>
+        {(path) => (
+          <HistoryPanel
+            path={path()}
+            onClose={() => setHistoryOpen(false)}
+            onRestored={() => setReloadSignal((n) => n + 1)}
+          />
+        )}
       </Show>
     </div>
   );

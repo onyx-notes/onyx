@@ -1421,3 +1421,67 @@ pub fn uninstall_plugin(state: State<'_, AppState>, id: String) -> CmdResult<()>
 pub fn keychain_available() -> bool {
     crate::secrets::available()
 }
+
+// ---------------------------------------------------------------------------
+// Note history (time machine)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteVersion {
+    pub created_ms: u64,
+    /// Hex plaintext hash (distinguishes identical-looking versions).
+    pub hash: String,
+}
+
+/// Saved versions of a note, newest first.
+#[tauri::command]
+pub fn note_history(state: State<'_, AppState>, path: String) -> CmdResult<Vec<NoteVersion>> {
+    let note = parse_path(&path)?;
+    state.with_engine(|engine| {
+        let id = engine.vault().note_id(&note);
+        Ok(engine
+            .history()
+            .versions(id)
+            .map_err(err)?
+            .into_iter()
+            .map(|version| NoteVersion {
+                created_ms: version.created_ms,
+                hash: version
+                    .hash
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            })
+            .collect())
+    })
+}
+
+/// Content of a specific past version (for the diff/preview).
+#[tauri::command]
+pub fn note_version_content(
+    state: State<'_, AppState>,
+    path: String,
+    created_ms: u64,
+) -> CmdResult<String> {
+    let note = parse_path(&path)?;
+    state.with_engine(|engine| {
+        let id = engine.vault().note_id(&note);
+        engine
+            .history()
+            .get(id, created_ms)
+            .map_err(err)?
+            .ok_or_else(|| "version not found".to_owned())
+    })
+}
+
+/// Restore a note to a past version (itself recorded, so it's undoable).
+#[tauri::command]
+pub fn restore_note_version(
+    state: State<'_, AppState>,
+    path: String,
+    created_ms: u64,
+) -> CmdResult<()> {
+    let note = parse_path(&path)?;
+    state.with_engine(|engine| engine.restore_version(&note, created_ms).map_err(err))
+}

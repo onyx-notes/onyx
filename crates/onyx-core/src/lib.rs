@@ -25,6 +25,7 @@ mod cryptofs;
 mod events;
 mod fs;
 mod graph;
+mod history;
 mod index;
 mod journal;
 mod paths;
@@ -38,6 +39,7 @@ pub use cryptofs::CryptoFs;
 pub use events::VaultEvent;
 pub use fs::{FileStat, MemFs, RealFs, VaultFs};
 pub use graph::LinkGraph;
+pub use history::{History, HistoryError, Version};
 pub use index::{
     BacklinkRow, GraphData, GraphNode, HeadingRow, Index, IndexError, NoteRecord, TagCount,
 };

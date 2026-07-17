@@ -89,6 +89,11 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export interface NoteVersion {
+  createdMs: number;
+  hash: string;
+}
+
 export type Proposal =
   | { kind: "write"; path: string; content: string }
   | { kind: "delete"; path: string };
@@ -217,6 +222,11 @@ export const api = {
   agentRun: (goal: string) => invoke<Changeset>("agent_run", { goal }),
   agentApply: (proposals: Proposal[]) =>
     invoke<number>("agent_apply", { proposals }),
+  noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),
+  noteVersionContent: (path: string, createdMs: number) =>
+    invoke<string>("note_version_content", { path, createdMs }),
+  restoreNoteVersion: (path: string, createdMs: number) =>
+    invoke<void>("restore_note_version", { path, createdMs }),
   setPluginEnabled: (id: string, enabled: boolean) =>
     invoke<void>("set_plugin_enabled", { id, enabled }),
   pluginRegistry: (registryUrl: string) =>

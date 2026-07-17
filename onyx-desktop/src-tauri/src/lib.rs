@@ -79,6 +79,9 @@ pub fn run() {
             commands::install_plugin,
             commands::uninstall_plugin,
             commands::keychain_available,
+            commands::note_history,
+            commands::note_version_content,
+            commands::restore_note_version,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

@@ -876,3 +876,23 @@ body.full-width .reading-view { max-width: none; }
 .diff-same { color: var(--onyx-text-muted); }
 
 .agent-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+/* ---- history panel ---- */
+
+.palette.history { width: min(860px, 95vw); height: min(620px, 86vh); }
+.history-body { flex: 1; display: flex; min-height: 0; }
+.history-list {
+  width: 220px;
+  overflow-y: auto;
+  border-right: 1px solid var(--onyx-border);
+  padding: 4px;
+}
+.history-preview { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.history-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--onyx-border);
+}
+.history-preview .agent-diff { flex: 1; max-height: none; }

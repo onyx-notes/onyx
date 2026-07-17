@@ -114,5 +114,10 @@
   "plugins.uninstall": "Remove",
   "plugins.installed": "Installed ✓ (enable it above to run)",
   "ai.keychainOn": "🔐 API key stored in your OS keychain",
-  "ai.keychainOff": "⚠ No OS keychain — key stored in an app config file"
+  "ai.keychainOff": "⚠ No OS keychain — key stored in an app config file",
+  "history.title": "Version history",
+  "history.empty": "No saved versions yet",
+  "history.pick": "Select a version to preview",
+  "history.diffNote": "− past version   + current",
+  "history.restore": "Restore this version"
 }
