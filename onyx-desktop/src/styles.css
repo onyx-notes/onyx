@@ -743,3 +743,74 @@ img.onyx-embed-image {
   outline: none;
   border-color: var(--onyx-accent);
 }
+
+/* ---- reading view ---- */
+
+.reading-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 32px 24px;
+  max-width: 46rem;
+  margin: 0 auto;
+  width: 100%;
+  line-height: 1.65;
+}
+
+body.full-width .reading-view { max-width: none; }
+
+.reading-view h1, .reading-view h2, .reading-view h3,
+.reading-view h4, .reading-view h5, .reading-view h6 {
+  font-family: var(--onyx-font-ui);
+  margin: 1em 0 0.4em;
+}
+
+.reading-view p { margin: 0.6em 0; }
+.reading-view ul, .reading-view ol { margin: 0.6em 0 0.6em 1.6em; }
+
+.reading-view blockquote {
+  border-left: 3px solid var(--onyx-accent-muted);
+  padding-left: 12px;
+  color: var(--onyx-text-secondary);
+  margin: 0.8em 0;
+}
+
+.reading-view pre {
+  background: var(--onyx-bg-secondary);
+  border-radius: var(--onyx-radius);
+  padding: 12px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+
+.reading-view code { font-family: var(--onyx-font-mono); font-size: 0.9em; }
+
+.reading-view table { border-collapse: collapse; margin: 0.8em 0; }
+.reading-view th, .reading-view td {
+  border: 1px solid var(--onyx-border);
+  padding: 5px 12px;
+}
+
+.reading-view a.onyx-wikilink {
+  color: var(--onyx-accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.reading-view a.onyx-wikilink:hover { text-decoration: underline; }
+
+.reading-view img { max-width: 100%; border-radius: var(--onyx-radius); }
+
+.onyx-mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 0.8em 0;
+  background: var(--onyx-bg-secondary);
+  border-radius: var(--onyx-radius);
+  padding: 12px;
+}
+
+.onyx-mermaid.is-error {
+  color: var(--onyx-danger);
+  font-family: var(--onyx-font-mono);
+  white-space: pre-wrap;
+}

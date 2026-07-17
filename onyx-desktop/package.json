@@ -21,6 +21,8 @@
     "codemirror": "^6.0.1",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
+    "katex": "^0.17.0",
+    "mermaid": "^11.16.0",
     "sigma": "^3.0.3",
     "solid-js": "^1.9.0"
   },

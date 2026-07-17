@@ -12,6 +12,7 @@ import Editor from "./components/Editor";
 import GraphView from "./components/GraphView";
 import Insights from "./components/Insights";
 import QuickSwitcher from "./components/QuickSwitcher";
+import ReadingView from "./components/ReadingView";
 import RightPanel from "./components/RightPanel";
 import SettingsModal from "./components/SettingsModal";
 import TabBar from "./components/TabBar";
@@ -60,6 +61,7 @@ export default function App() {
   const [graphOpen, setGraphOpen] = createSignal(false);
   const [insightsOpen, setInsightsOpen] = createSignal(false);
   const [chatOpen, setChatOpen] = createSignal(false);
+  const [readingMode, setReadingMode] = createSignal(false);
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
   const pluginHost = new PluginHost({
@@ -89,6 +91,11 @@ export default function App() {
     },
     { id: "app.graph", name: t("graph.title"), run: () => setGraphOpen(true) },
     { id: "app.chat", name: t("chat.title"), run: () => setChatOpen(true) },
+    {
+      id: "app.reading",
+      name: t("reading.toggle"),
+      run: () => setReadingMode((value) => !value),
+    },
     { id: "app.insights", name: t("insights.title"), run: () => setInsightsOpen(true) },
     { id: "app.lock", name: t("vault.lock"), run: () => void lockVault() },
     ...pluginCommands().map((command) => ({
@@ -285,6 +292,9 @@ export default function App() {
       } else if (mod && key === "p") {
         event.preventDefault();
         if (vaultRoot() !== null) setQuickOpen(true);
+      } else if (mod && key === "r") {
+        event.preventDefault();
+        if (activePath() !== null) setReadingMode((value) => !value);
       } else if (mod && key === "g") {
         event.preventDefault();
         if (vaultRoot() !== null) setGraphOpen((value) => !value);
@@ -391,14 +401,25 @@ export default function App() {
             }
           >
             {(path) => (
-              <Editor
-                path={path()}
-                content={content()}
-                reloadSignal={reloadSignal()}
-                onChange={(body) => void saveNote(body)}
-                onFollowLink={(target) => void followLink(target)}
-                scrollTarget={scrollTarget()}
-              />
+              <Show
+                when={!readingMode()}
+                fallback={
+                  <ReadingView
+                    path={path()}
+                    reloadSignal={reloadSignal()}
+                    onFollowLink={(target) => void followLink(target)}
+                  />
+                }
+              >
+                <Editor
+                  path={path()}
+                  content={content()}
+                  reloadSignal={reloadSignal()}
+                  onChange={(body) => void saveNote(body)}
+                  onFollowLink={(target) => void followLink(target)}
+                  scrollTarget={scrollTarget()}
+                />
+              </Show>
             )}
           </Show>
           <div class="statusbar">

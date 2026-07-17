@@ -95,5 +95,6 @@
   "pair.showCode": "On your existing device, enter code: {code} — waiting…",
   "pair.confirmSas": "Verification code: {sas}. Press 'Codes match' ONLY if the other screen shows the same.",
   "pair.sasMatches": "Codes match — apply",
-  "pair.done": "Paired. Sync is starting."
+  "pair.done": "Paired. Sync is starting.",
+  "reading.toggle": "Toggle reading view"
 }

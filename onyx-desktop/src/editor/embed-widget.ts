@@ -60,16 +60,12 @@ async function renderInto(container: HTMLElement, target: string): Promise<void>
     }
   }
   container.innerHTML = html;
-  // Nested image embeds inside the rendered HTML get real sources; nested
-  // note embeds stay links (depth limit 1 by construction).
-  for (const image of container.querySelectorAll<HTMLElement>("img[data-vault-target]")) {
-    const nested = image.dataset["vaultTarget"];
-    if (nested) {
-      void resolve(nested).then((nestedPath) => {
-        if (nestedPath) (image as HTMLImageElement).src = fileUrl(nestedPath);
-      });
-    }
-  }
+  // Shared enhancement: math, mermaid, vault images. Link clicks inside
+  // embeds are handled by the editor's delegation, so pass a no-op here
+  // (the container listener would double-fire otherwise).
+  const { enhanceRendered } = await import("./enhance");
+  container.dataset["onyxLinksBound"] = "1"; // editor handles clicks
+  await enhanceRendered(container, { followLink: () => {} });
 }
 
 export class EmbedWidget extends WidgetType {
