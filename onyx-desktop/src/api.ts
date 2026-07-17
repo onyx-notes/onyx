@@ -89,6 +89,12 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export interface QueryOutput {
+  columns: string[];
+  rows: string[][];
+  error: string | null;
+}
+
 export interface NoteVersion {
   createdMs: number;
   hash: string;
@@ -222,6 +228,8 @@ export const api = {
   agentRun: (goal: string) => invoke<Changeset>("agent_run", { goal }),
   agentApply: (proposals: Proposal[]) =>
     invoke<number>("agent_apply", { proposals }),
+  runQueryBlock: (source: string) =>
+    invoke<QueryOutput>("run_query_block", { source }),
   noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),
   noteVersionContent: (path: string, createdMs: number) =>
     invoke<string>("note_version_content", { path, createdMs }),

@@ -896,3 +896,35 @@ body.full-width .reading-view { max-width: none; }
   border-bottom: 1px solid var(--onyx-border);
 }
 .history-preview .agent-diff { flex: 1; max-height: none; }
+
+/* ---- onyx-query blocks ---- */
+
+.onyx-query {
+  margin: 0.8em 0;
+  overflow-x: auto;
+}
+
+.onyx-query table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.onyx-query th, .onyx-query td {
+  border: 1px solid var(--onyx-border);
+  padding: 5px 12px;
+  text-align: left;
+}
+
+.onyx-query th {
+  background: var(--onyx-bg-tertiary);
+  font-family: var(--onyx-font-ui);
+}
+
+.onyx-query a.onyx-wikilink { color: var(--onyx-accent); cursor: pointer; }
+.onyx-query.is-error {
+  color: var(--onyx-danger);
+  font-family: var(--onyx-font-mono);
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+.onyx-query.is-empty { color: var(--onyx-text-muted); font-style: italic; }

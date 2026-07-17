@@ -1485,3 +1485,35 @@ pub fn restore_note_version(
     let note = parse_path(&path)?;
     state.with_engine(|engine| engine.restore_version(&note, created_ms).map_err(err))
 }
+
+// ---------------------------------------------------------------------------
+// onyx-query blocks
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryOutput {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub error: Option<String>,
+}
+
+/// Execute an onyx-query block against the current vault index.
+#[tauri::command]
+pub fn run_query_block(state: State<'_, AppState>, source: String) -> CmdResult<QueryOutput> {
+    state.with_engine(|engine| {
+        let rows = engine.index().query_rows().map_err(err)?;
+        match onyx_core::run_query(&source, &rows) {
+            Ok(result) => Ok(QueryOutput {
+                columns: result.columns,
+                rows: result.rows,
+                error: None,
+            }),
+            Err(message) => Ok(QueryOutput {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                error: Some(message),
+            }),
+        }
+    })
+}

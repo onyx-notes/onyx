@@ -65,6 +65,31 @@ export async function enhanceRendered(
     });
   }
 
+  // 3a. onyx-query blocks → rendered tables (link column clickable).
+  for (const block of container.querySelectorAll<HTMLElement>(
+    "pre code.language-onyx-query",
+  )) {
+    const source = block.textContent ?? "";
+    const host = document.createElement("div");
+    host.className = "onyx-query";
+    try {
+      const result = await api.runQueryBlock(source);
+      if (result.error) {
+        host.classList.add("is-error");
+        host.textContent = result.error;
+      } else if (result.rows.length === 0) {
+        host.classList.add("is-empty");
+        host.textContent = "No results";
+      } else {
+        renderQueryTable(host, result, callbacks.followLink);
+      }
+    } catch (error) {
+      host.classList.add("is-error");
+      host.textContent = String(error);
+    }
+    block.closest("pre")?.replaceWith(host);
+  }
+
   // 3. Mermaid diagrams: ```mermaid fences arrive as language-mermaid code.
   const mermaidBlocks = [
     ...container.querySelectorAll<HTMLElement>("pre code.language-mermaid"),
@@ -98,4 +123,46 @@ export async function enhanceRendered(
       throwOnError: false,
     });
   }
+}
+
+/** Render a query result as a table; the first column links to the note. */
+function renderQueryTable(
+  host: HTMLElement,
+  result: { columns: string[]; rows: string[][] },
+  followLink: (target: string) => void,
+): void {
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const col of result.columns) {
+    const th = document.createElement("th");
+    th.textContent = col;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const row of result.rows) {
+    const tr = document.createElement("tr");
+    row.forEach((cell, index) => {
+      const td = document.createElement("td");
+      if (index === 0) {
+        const link = document.createElement("a");
+        link.className = "onyx-wikilink";
+        link.textContent = cell.replace(/\.(md|markdown)$/i, "");
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          followLink(cell);
+        });
+        td.appendChild(link);
+      } else {
+        td.textContent = cell;
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  host.replaceChildren(table);
 }

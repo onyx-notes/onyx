@@ -16,7 +16,9 @@ use crate::events::VaultEvent;
 use crate::paths::{NoteId, NotePath};
 use crate::vault::Vault;
 
-pub use store::{BacklinkRow, GraphData, GraphNode, HeadingRow, IndexError, NoteRecord, TagCount};
+pub use store::{
+    BacklinkRow, GraphData, GraphNode, HeadingRow, IndexError, NoteRecord, QueryRow, TagCount,
+};
 
 /// The vault index. One writer at a time (SQLite connection is not shared);
 /// the app layer owns threading.
@@ -159,6 +161,11 @@ impl Index {
     /// Bulk node + edge data for [`crate::LinkGraph`] construction.
     pub fn graph_data(&self) -> Result<GraphData, IndexError> {
         self.store.graph_data()
+    }
+
+    /// Markdown notes with tags + frontmatter, for query blocks.
+    pub fn query_rows(&self) -> Result<Vec<QueryRow>, IndexError> {
+        self.store.query_rows()
     }
 
     /// Canonical dump of all indexed state, for equality assertions in
