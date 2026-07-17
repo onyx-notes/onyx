@@ -394,6 +394,8 @@ pub(crate) fn start_sync(
 
     let client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
     crate::state::spawn_sync_agent(app, state, client, vault_id);
+    // Remember the config so an app pause/resume can restart the agent.
+    *state.active_sync.lock() = Some(config.clone());
     Ok(())
 }
 
@@ -1787,4 +1789,38 @@ pub fn quick_capture(state: State<'_, AppState>, text: String, date: String) -> 
         engine.append_to_note(&path, &entry).map_err(err)?;
         Ok(path.as_str().to_owned())
     })
+}
+
+// ---------------------------------------------------------------------------
+// App lifecycle (mobile background/foreground; desktop sleep/wake)
+// ---------------------------------------------------------------------------
+
+/// The app is going to the background: stop the sync agent cleanly (its
+/// sockets won't survive suspension anyway).
+#[tauri::command]
+pub fn app_pause(state: State<'_, AppState>) {
+    state.pause_sync();
+}
+
+/// The app returned to the foreground: restart sync with a FRESH connection
+/// (suspended sockets are often half-open and silently dead) and cycle
+/// immediately.
+#[tauri::command]
+pub fn app_resume(app: AppHandle, state: State<'_, AppState>) {
+    resume_sync_if_needed(&app, &state);
+}
+
+pub(crate) fn resume_sync_if_needed(app: &AppHandle, state: &State<'_, AppState>) {
+    if state.sync_running() {
+        return;
+    }
+    let Some(config) = state.active_sync.lock().clone() else {
+        return;
+    };
+    if state.engine.lock().is_none() {
+        return;
+    }
+    if let Err(error) = start_sync(app, state, &config) {
+        tracing::warn!(%error, "sync resume failed");
+    }
 }

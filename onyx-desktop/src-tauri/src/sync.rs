@@ -27,6 +27,21 @@ pub enum SyncSetupError {
     Io(#[from] std::io::Error),
     #[error("invalid sync code")]
     BadCode,
+    /// The server is unreachable (no network / airplane mode / server
+    /// down). Not an error state for the UI — sync resumes when
+    /// connectivity returns.
+    #[error("server unreachable")]
+    Offline,
+}
+
+/// Map a transport error to `Offline` when it's a connectivity failure
+/// rather than a protocol/server problem.
+fn transport_error(error: reqwest::Error) -> SyncSetupError {
+    if error.is_connect() || error.is_timeout() {
+        SyncSetupError::Offline
+    } else {
+        SyncSetupError::Http(error.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,9 +175,7 @@ impl SyncClient {
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }
-        let response = request
-            .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        let response = request.send().map_err(transport_error)?;
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().unwrap_or_default();
@@ -236,7 +249,7 @@ impl SyncClient {
             .bearer_auth(token)
             .body(blob)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -251,7 +264,7 @@ impl SyncClient {
             .delete(format!("{}/v1/shares/{id}", self.base))
             .bearer_auth(token)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -273,7 +286,7 @@ impl SyncClient {
             .bearer_auth(token)
             .body(body)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         let status = response.status();
         if status.is_success() {
             Ok(true)
@@ -294,7 +307,7 @@ impl SyncClient {
             .get(format!("{}{path}", self.base))
             .bearer_auth(token)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if !response.status().is_success() {
             return Err(SyncSetupError::Server(response.status().to_string()));
         }
@@ -335,7 +348,7 @@ impl SyncClient {
             .bearer_auth(token)
             .body(body)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if !response.status().is_success() {
             return Err(SyncSetupError::Server(response.status().to_string()));
         }
@@ -358,7 +371,7 @@ impl SyncClient {
             ))
             .bearer_auth(token)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         Ok(response.status().is_success())
     }
 
@@ -379,7 +392,7 @@ impl SyncClient {
             .bearer_auth(token)
             .body(ciphertext)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if !response.status().is_success() {
             return Err(SyncSetupError::Server(response.status().to_string()));
         }
@@ -397,7 +410,7 @@ impl SyncClient {
             ))
             .bearer_auth(token)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if !response.status().is_success() {
             return Err(SyncSetupError::Server(response.status().to_string()));
         }
@@ -422,7 +435,7 @@ impl SyncClient {
             ))
             .bearer_auth(token)
             .send()
-            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            .map_err(transport_error)?;
         if !response.status().is_success() {
             return Err(SyncSetupError::Server(response.status().to_string()));
         }
@@ -469,16 +482,43 @@ pub fn spawn_ws_waker(
                 match connect_ws(&url, &token) {
                     Ok(mut socket) => {
                         tracing::debug!("live-push connected");
+                        // Liveness: read timeouts alone can't distinguish a
+                        // quiet healthy socket from a half-open dead one
+                        // (device suspend, network migration). Ping every
+                        // PING_INTERVAL; no traffic (incl. pong) within
+                        // DEAD_AFTER ⇒ reconnect.
+                        const PING_INTERVAL: std::time::Duration =
+                            std::time::Duration::from_secs(30);
+                        const DEAD_AFTER: std::time::Duration = std::time::Duration::from_secs(90);
+                        let mut last_activity = std::time::Instant::now();
+                        let mut last_ping = std::time::Instant::now();
                         loop {
                             if !alive.load(Ordering::Relaxed) {
                                 let _ = socket.close(None);
                                 return;
                             }
+                            if last_ping.elapsed() >= PING_INTERVAL {
+                                last_ping = std::time::Instant::now();
+                                if socket
+                                    .send(tungstenite::Message::Ping(Vec::new().into()))
+                                    .is_err()
+                                {
+                                    break; // send failure: reconnect
+                                }
+                            }
+                            if last_activity.elapsed() >= DEAD_AFTER {
+                                tracing::debug!("live-push socket silent too long; reconnecting");
+                                break;
+                            }
                             match socket.read() {
                                 Ok(message) if message.is_text() => {
+                                    last_activity = std::time::Instant::now();
                                     let _ = wake.try_send(());
                                 }
-                                Ok(_) => {}
+                                Ok(_) => {
+                                    // Pongs (and any other frame) prove life.
+                                    last_activity = std::time::Instant::now();
+                                }
                                 Err(tungstenite::Error::Io(error))
                                     if matches!(
                                         error.kind(),
@@ -804,6 +844,29 @@ pub fn enroll_claim(
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+
+    /// An unreachable server must classify as Offline (roaming state), not
+    /// as an error the UI alarms on.
+    #[test]
+    fn unreachable_server_is_offline_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = DeviceIdentity::load_or_create(&dir.path().join("device.key")).unwrap();
+        // Port 9 (discard) on localhost: connection refused immediately.
+        let mut client = SyncClient::new("http://127.0.0.1:9", identity).unwrap();
+        match client.pull([0; 16], 0) {
+            Err(SyncSetupError::Offline) => {}
+            other => panic!("expected Offline, got {other:?}"),
+        }
+        match client.ensure_auth() {
+            Err(SyncSetupError::Offline) => {}
+            other => panic!("expected Offline, got {:?}", other.map(|_| "token")),
         }
     }
 }

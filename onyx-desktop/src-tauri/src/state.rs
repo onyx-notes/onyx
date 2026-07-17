@@ -37,6 +37,10 @@ pub struct AppState {
     /// Dropping the sender stops the sync agent loop.
     sync_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
     pub sync_status: Arc<Mutex<SyncStatusInfo>>,
+    /// The active sync configuration, kept so the agent can be resumed
+    /// after an app pause (mobile background, laptop sleep) without
+    /// re-reading vault state.
+    pub active_sync: Mutex<Option<crate::sync::SyncConfig>>,
     /// Dropping the sender stops the auto-backup timer.
     backup_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
     /// AI request log — the "see exactly what left your machine" surface.
@@ -90,6 +94,26 @@ impl AppState {
         *self.watcher.lock() = None;
         *self.engine.lock() = None;
         *self.sync_status.lock() = SyncStatusInfo::default();
+        *self.active_sync.lock() = None;
+    }
+
+    /// Whether the sync agent is currently running.
+    pub fn sync_running(&self) -> bool {
+        self.sync_stop.lock().is_some()
+    }
+
+    /// Stop the sync agent (app going to background / device suspending)
+    /// without forgetting the configuration — `resume` restarts it. The
+    /// agent and its WS waker exit within ~2s (stop channel + read
+    /// timeouts); the fresh connection on resume is deliberate: sockets
+    /// that survived a suspend are often half-open and silently dead.
+    pub fn pause_sync(&self) {
+        if self.sync_stop.lock().take().is_some() {
+            let mut status = self.sync_status.lock();
+            if status.enabled {
+                status.state = "paused".into();
+            }
+        }
     }
 }
 
@@ -273,6 +297,13 @@ pub fn spawn_sync_agent(
                             let _ = app.emit(VAULT_EVENT, FrontendEvent::Modified { path });
                         }
                     }
+                    // Unreachable server is a normal roaming state, not an
+                    // error: no auth reset, no scary status; retry next tick.
+                    Err(crate::sync::SyncSetupError::Offline) => {
+                        let mut info = status.lock();
+                        info.state = "offline".into();
+                        info.last_error = None;
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "sync cycle failed");
                         client.reset_auth(); // token may be stale (server restart)
@@ -367,4 +398,40 @@ pub fn spawn_backup_timer(state: &AppState, interval_hours: u32) {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_is_idempotent_and_resumable_state() {
+        let state = AppState::default();
+        assert!(!state.sync_running());
+
+        // Simulate a running agent + stored config.
+        let (sender, _receiver) = crossbeam_channel::bounded::<()>(0);
+        *state.sync_stop.lock() = Some(sender);
+        state.sync_status.lock().enabled = true;
+        *state.active_sync.lock() = Some(crate::sync::SyncConfig {
+            server_url: "http://example.invalid".into(),
+            vault_id: "00".repeat(16),
+            key: Some("11".repeat(32)),
+        });
+        assert!(state.sync_running());
+
+        state.pause_sync();
+        assert!(!state.sync_running());
+        assert_eq!(state.sync_status.lock().state, "paused");
+        // Config survives the pause — that's what resume needs.
+        assert!(state.active_sync.lock().is_some());
+        // Second pause is a no-op (no status churn, no panic).
+        state.pause_sync();
+        assert!(!state.sync_running());
+
+        // Locking the vault forgets the sync config entirely.
+        state.lock_vault();
+        assert!(state.active_sync.lock().is_none());
+        assert!(!state.sync_status.lock().enabled);
+    }
 }

@@ -378,6 +378,22 @@ export default function App() {
       }
     }, 5000);
     onCleanup(() => clearInterval(poll));
+
+    // App lifecycle: pause sync when hidden (mobile background, minimized),
+    // resume with a fresh connection when visible again. Complements the
+    // native RunEvent handling on platforms that deliver it.
+    const onVisibility = () => {
+      if (vaultRoot() === null) return;
+      if (document.visibilityState === "hidden") {
+        void api.appPause();
+      } else {
+        void api.appResume();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    onCleanup(() =>
+      document.removeEventListener("visibilitychange", onVisibility),
+    );
   });
 
   const wordCount = () =>
@@ -462,7 +478,13 @@ export default function App() {
             <Show when={syncState()}>
               {(state) => (
                 <span title={t("sync.statusTitle")}>
-                  {state() === "error" ? "⚠ sync" : "⟳ " + state()}
+                  {state() === "error"
+                    ? "⚠ sync"
+                    : state() === "offline"
+                      ? "⌁ offline"
+                      : state() === "paused"
+                        ? "⏸ sync"
+                        : "⟳ " + state()}
                 </span>
               )}
             </Show>

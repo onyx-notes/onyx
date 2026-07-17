@@ -221,6 +221,8 @@ export const api = {
   syncJoin: (serverUrl: string, code: string) =>
     invoke<void>("sync_join", { serverUrl, code }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
+  appPause: () => invoke<void>("app_pause"),
+  appResume: () => invoke<void>("app_resume"),
   enrollStart: (serverUrl: string) =>
     invoke<{ code: string }>("enroll_start", { serverUrl }),
   enrollWait: () => invoke<{ sas: string }>("enroll_wait"),

@@ -97,7 +97,29 @@ pub fn run() {
             commands::publish_site,
             commands::clipper_info,
             commands::quick_capture,
+            commands::app_pause,
+            commands::app_resume,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Onyx");
+        .build(tauri::generate_context!())
+        .expect("failed to build Onyx")
+        .run(|app_handle, event| {
+            // Mobile lifecycle: suspend/resume the sync agent with the OS.
+            // (The frontend's visibilitychange handler covers platforms
+            // where these events aren't delivered.)
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            {
+                use tauri::Manager;
+                match event {
+                    tauri::RunEvent::Resumed => {
+                        let state = app_handle.state::<state::AppState>();
+                        commands::resume_sync_if_needed(app_handle, &state);
+                    }
+                    _ => {}
+                }
+            }
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                let _ = (app_handle, &event);
+            }
+        });
 }
