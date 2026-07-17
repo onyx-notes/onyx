@@ -184,7 +184,10 @@ mod tests {
             total: 5,
             complete: false,
         };
-        assert_eq!(decode::<BlobStatus>(&encode(&status).unwrap()).unwrap(), status);
+        assert_eq!(
+            decode::<BlobStatus>(&encode(&status).unwrap()).unwrap(),
+            status
+        );
     }
 
     #[test]

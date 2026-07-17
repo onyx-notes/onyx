@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-proto"
 description = "Onyx wire protocol: versioned message types shared by clients and server"
 version.workspace = true

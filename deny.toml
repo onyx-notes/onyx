@@ -4,6 +4,21 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# For "unmaintained" advisories, only flag crates WE depend on directly —
+# deep transitive deps we can't control (Tauri's GTK3 Linux stack,
+# atomic-polyfill via heapless) would otherwise fail with nothing actionable.
+unmaintained = "workspace"
+# Vulnerabilities are denied by default. These three are the exception: all
+# denial-of-service only, in transitive deps we cannot currently upgrade
+# (quick-xml is pinned by opendal/reqsign; the time fix needs an MSRV bump),
+# and none sits on an attacker-controlled input path — quick-xml parses S3
+# API responses from the user's own configured endpoint, not remote input.
+# Revisit each when the upstream constraint clears.
+ignore = [
+    "RUSTSEC-2026-0009", # time <0.3.47: stack exhaustion; fix needs newer MSRV
+    "RUSTSEC-2026-0194", # quick-xml <0.41: quadratic attribute check; pinned by opendal
+    "RUSTSEC-2026-0195", # quick-xml <0.41: NsReader memory exhaustion; pinned by opendal
+]
 
 [licenses]
 version = 2
@@ -18,17 +33,26 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",
     "CC0-1.0",
+    # Permissive; pulled in transitively via the tantivy search stack.
+    "CDLA-Permissive-2.0",
+    # Boost Software License; permissive, OSI-approved. Via xxhash-rust (Loro).
+    "BSL-1.0",
     "AGPL-3.0-or-later",
     "AGPL-3.0",
 ]
 
 [bans]
 multiple-versions = "warn"
+# Deny wildcard versions on published crates, but allow them for our own
+# internal path dependencies (a workspace crate with no version field).
 wildcards = "deny"
-# The server must never link the vault engine or markdown parser —
-# the dependency graph is part of the zero-knowledge proof.
+allow-wildcard-paths = true
+# The server must never link the vault engine or markdown parser — the
+# dependency graph is part of the zero-knowledge proof. `wrappers` lists
+# every crate that IS allowed to use onyx-core; onyx-server is deliberately
+# absent, so if it ever gained the dependency this check would fail.
 deny = [
-    { crate = "onyx-core", wrappers = ["onyx-testkit"] },
+    { crate = "onyx-core", wrappers = ["onyx-desktop", "xtask"] },
 ]
 
 [sources]

@@ -1464,7 +1464,11 @@ mod sync_tests {
     fn attachment_blob_hash_is_stable_across_retries() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("assets")).unwrap();
-        std::fs::write(dir.path().join("assets/pic.png"), b"\x89PNG-ish binary payload").unwrap();
+        std::fs::write(
+            dir.path().join("assets/pic.png"),
+            b"\x89PNG-ish binary payload",
+        )
+        .unwrap();
         let mut engine = sync_engine(dir.path(), 1);
         engine
             .apply_event(&onyx_core::VaultEvent::BulkChange)

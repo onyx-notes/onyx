@@ -279,7 +279,11 @@ async fn chunked_blob_uploads_resume_and_serve_ranges() {
             false,
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "partial chunk accepted, not complete");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "partial chunk accepted, not complete"
+        );
     }
     // Not yet downloadable.
     let (status, _) = request(&app, "GET", &base, Some(&device.token), Vec::new(), false).await;
@@ -414,7 +418,11 @@ async fn checkpoint_compaction_preserves_convergence_for_a_fresh_device() {
         doc.set_text(&format!("line {i}\n")).unwrap();
         let update = doc.export_from(&since).unwrap();
         since = doc.version();
-        let op = onyx_proto::EncOp::incremental(doc_id, &update, onyx_crypto::encrypt(&vault_key, &update));
+        let op = onyx_proto::EncOp::incremental(
+            doc_id,
+            &update,
+            onyx_crypto::encrypt(&vault_key, &update),
+        );
         let push = onyx_proto::PushOps {
             version: onyx_proto::PROTOCOL_VERSION,
             ops: vec![op],
@@ -449,7 +457,8 @@ async fn checkpoint_compaction_preserves_convergence_for_a_fresh_device() {
 
     // The author answers with a full-state checkpoint.
     let full = doc.export_from(&[]).unwrap();
-    let checkpoint = onyx_proto::EncOp::checkpoint(doc_id, &full, onyx_crypto::encrypt(&vault_key, &full));
+    let checkpoint =
+        onyx_proto::EncOp::checkpoint(doc_id, &full, onyx_crypto::encrypt(&vault_key, &full));
     let push = onyx_proto::PushOps {
         version: onyx_proto::PROTOCOL_VERSION,
         ops: vec![checkpoint],
@@ -497,7 +506,11 @@ async fn checkpoint_compaction_preserves_convergence_for_a_fresh_device() {
         let plaintext = onyx_crypto::decrypt(&vault_key, &op.ciphertext).unwrap();
         fresh.import(&plaintext).unwrap();
     }
-    assert_eq!(fresh.text(), doc.text(), "fresh device must converge post-prune");
+    assert_eq!(
+        fresh.text(),
+        doc.text(),
+        "fresh device must converge post-prune"
+    );
 }
 
 #[tokio::test]

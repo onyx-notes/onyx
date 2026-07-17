@@ -252,9 +252,10 @@ pub async fn put_blob_chunk(
         Ok(false) => Ok(StatusCode::OK),
         // Reassembly hashed to the wrong value: the client uploaded corrupt
         // or mismatched chunks. The partial upload was discarded; ask again.
-        Err(crate::db::DbError::HashMismatch) => {
-            Err((StatusCode::BAD_REQUEST, "hash mismatch on reassembly".into()))
-        }
+        Err(crate::db::DbError::HashMismatch) => Err((
+            StatusCode::BAD_REQUEST,
+            "hash mismatch on reassembly".into(),
+        )),
         Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
     }
 }

@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-sync"
 description = "Onyx sync engine: CRDT documents, sidecar store, sync state machine"
 version.workspace = true

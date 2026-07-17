@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-server"
 description = "Onyx self-hosted sync server: zero-knowledge encrypted oplog"
 version.workspace = true

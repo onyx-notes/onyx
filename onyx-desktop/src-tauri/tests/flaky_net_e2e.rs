@@ -119,7 +119,7 @@ fn pump(mut from: TcpStream, mut to: TcpStream, open: Arc<AtomicBool>) {
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                continue
+                continue;
             }
             Err(_) => {
                 let _ = to.shutdown(Shutdown::Both);

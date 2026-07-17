@@ -126,8 +126,7 @@ impl<R: Runtime> OnyxSecrets<R> {
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         #[cfg(mobile)]
         {
-            let response: ValueResponse =
-                self.handle.run_mobile_plugin("get", KeyArgs { key })?;
+            let response: ValueResponse = self.handle.run_mobile_plugin("get", KeyArgs { key })?;
             Ok(response.value)
         }
         #[cfg(not(mobile))]

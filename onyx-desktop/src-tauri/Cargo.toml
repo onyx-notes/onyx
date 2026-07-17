@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-desktop"
 description = "Onyx desktop app (Tauri v2 shell)"
 version.workspace = true

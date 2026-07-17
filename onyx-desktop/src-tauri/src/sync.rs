@@ -601,10 +601,7 @@ impl SyncClient {
             let last = (have + chunk - 1).min(size - 1);
             let response = self
                 .http
-                .get(format!(
-                    "{}/v1/vaults/{vault_hex}/blobs/{hash}",
-                    self.base,
-                ))
+                .get(format!("{}/v1/vaults/{vault_hex}/blobs/{hash}", self.base,))
                 .bearer_auth(&token)
                 .header(reqwest::header::RANGE, format!("bytes={have}-{last}"))
                 .send()

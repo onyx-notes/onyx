@@ -1945,7 +1945,10 @@ pub fn platform_info() -> serde_json::Value {
 #[cfg(mobile)]
 fn biometric_entry(path: &str) -> String {
     let digest = blake3::hash(path.as_bytes());
-    format!("vault-key-{}", data_encoding::HEXLOWER.encode(&digest.as_bytes()[..8]))
+    format!(
+        "vault-key-{}",
+        data_encoding::HEXLOWER.encode(&digest.as_bytes()[..8])
+    )
 }
 
 /// Marker key (plain storage) recording that a vault has an enrollment.
@@ -1975,18 +1978,14 @@ pub fn biometric_status(path: String) -> serde_json::Value {
 /// Enroll the open (encrypted) vault's key for biometric unlock. Prompts
 /// the user — presenting a biometric is the consent step.
 #[tauri::command]
-pub async fn enable_biometric_unlock(
-    state: State<'_, AppState>,
-    path: String,
-) -> CmdResult<()> {
+pub async fn enable_biometric_unlock(state: State<'_, AppState>, path: String) -> CmdResult<()> {
     #[cfg(mobile)]
     {
-        let key = state
-            .with_engine(|engine| {
-                engine
-                    .crypto_key()
-                    .ok_or_else(|| "biometric unlock requires an encrypted vault".to_string())
-            })?;
+        let key = state.with_engine(|engine| {
+            engine
+                .crypto_key()
+                .ok_or_else(|| "biometric unlock requires an encrypted vault".to_string())
+        })?;
         let entry = biometric_entry(&path);
         let marker = biometric_marker(&path);
         // The keystore prompt blocks until the user answers; keep it off

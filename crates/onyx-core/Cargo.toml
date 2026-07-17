@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-core"
 description = "Onyx vault engine: file watching, atomic writes, indexing"
 version.workspace = true

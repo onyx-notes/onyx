@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "tauri-plugin-onyx-secrets"
 description = "Onyx mobile secret storage: iOS Keychain / Android Keystore, with biometric-bound entries"
 links = "tauri-plugin-onyx-secrets"

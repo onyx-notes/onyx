@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "onyx-crypto"
 description = "Onyx cryptography: key hierarchy, chunked AEAD container, filename encryption"
 version.workspace = true
