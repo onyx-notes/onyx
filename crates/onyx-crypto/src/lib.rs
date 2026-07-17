@@ -33,12 +33,14 @@ mod enroll;
 mod filename;
 mod kdf;
 mod keys;
+mod share;
 
 pub use container::{CHUNK_SIZE_DEFAULT, decrypt, encrypt, encrypt_convergent, encrypt_with};
 pub use enroll::{EnrollmentReceiver, open_enrollment, sas_code, seal_enrollment};
 pub use filename::{decrypt_name, encrypt_name};
 pub use kdf::KdfParams;
 pub use keys::{Keyfile, VaultKey};
+pub use share::{share_open, share_seal};
 
 /// Errors from cryptographic operations.
 ///

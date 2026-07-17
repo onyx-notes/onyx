@@ -44,6 +44,13 @@ CREATE TABLE IF NOT EXISTS enrollments (
     created_at INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS shares (
+    id         TEXT PRIMARY KEY,
+    device_id  BLOB NOT NULL,
+    blob       BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS blobs (
     vault_id   BLOB NOT NULL,
     hash       TEXT NOT NULL,
@@ -291,6 +298,38 @@ impl Db {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn put_share(&self, id: &str, device_id: [u8; 16], blob: &[u8]) -> Result<(), DbError> {
+        self.conn.lock().execute(
+            "INSERT INTO shares (id, device_id, blob, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET blob = ?3",
+            params![id, device_id, blob, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Public read: a share is protected by the key in the link fragment,
+    /// which the server never sees, so serving the ciphertext is safe.
+    pub fn get_share(&self, id: &str) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row(
+                "SELECT blob FROM shares WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Delete a share, but only by the device that created it.
+    pub fn delete_share(&self, id: &str, device_id: [u8; 16]) -> Result<bool, DbError> {
+        let deleted = self.conn.lock().execute(
+            "DELETE FROM shares WHERE id = ?1 AND device_id = ?2",
+            params![id, device_id],
+        )?;
+        Ok(deleted == 1)
     }
 
     pub fn put_blob(&self, vault_id: [u8; 16], hash: &str, data: &[u8]) -> Result<(), DbError> {

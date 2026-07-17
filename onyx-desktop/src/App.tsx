@@ -64,6 +64,24 @@ export default function App() {
   const [readingMode, setReadingMode] = createSignal(false);
   const [agentOpen, setAgentOpen] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
+  const [shareLink, setShareLink] = createSignal<string | null>(null);
+
+  const shareActive = async () => {
+    const path = activePath();
+    if (path === null) return;
+    try {
+      const link = await api.createShare(path);
+      setShareLink(link.url);
+      try {
+        await navigator.clipboard.writeText(link.url);
+        setStatus(t("share.copied"));
+      } catch {
+        setStatus(t("share.created"));
+      }
+    } catch (error) {
+      report(error);
+    }
+  };
   const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
 
   const [pluginInsert, setPluginInsert] = createSignal<{ text: string; epoch: number } | null>(
@@ -112,6 +130,7 @@ export default function App() {
       name: t("reading.toggle"),
       run: () => setReadingMode((value) => !value),
     },
+    { id: "app.share", name: t("share.title"), run: () => void shareActive() },
     { id: "app.insights", name: t("insights.title"), run: () => setInsightsOpen(true) },
     { id: "app.lock", name: t("vault.lock"), run: () => void lockVault() },
     ...pluginCommands().map((command) => ({
@@ -445,6 +464,22 @@ export default function App() {
                 <span title={t("sync.statusTitle")}>
                   {state() === "error" ? "⚠ sync" : "⟳ " + state()}
                 </span>
+              )}
+            </Show>
+            <Show when={shareLink()}>
+              {(url) => (
+                <a
+                  class="share-link"
+                  href={url()}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void navigator.clipboard.writeText(url());
+                    setStatus(t("share.copied"));
+                  }}
+                  title={url()}
+                >
+                  🔗 {t("share.link")}
+                </a>
               )}
             </Show>
             <span style={{ "margin-left": "auto" }}>{status()}</span>

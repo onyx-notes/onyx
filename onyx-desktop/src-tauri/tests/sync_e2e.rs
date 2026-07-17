@@ -417,3 +417,53 @@ fn enrollment_pairs_a_new_device_end_to_end() {
     bob.cycle(payload.vault_id);
     assert_eq!(bob.read("welcome.md"), "# Welcome\nshared note\n");
 }
+
+#[test]
+fn share_roundtrip_through_server() {
+    use data_encoding::BASE64URL_NOPAD;
+
+    let server = start_server();
+    let mut device = device(&server, &[]);
+    device.client.ensure_auth().unwrap();
+
+    // Seal some HTML the way create_share does.
+    let html = "<h1>Shared</h1><p>secret body</p>";
+    let (key, blob) = onyx_crypto::share_seal(html.as_bytes());
+    let id = "test-share-abcdef";
+
+    // Upload the ciphertext.
+    device.client.put_share(id, blob.clone()).unwrap();
+
+    // Public fetch (no auth) returns the exact ciphertext, and it contains
+    // no plaintext.
+    let fetched = reqwest::blocking::get(format!("{server}/v1/shares/{id}"))
+        .unwrap()
+        .bytes()
+        .unwrap()
+        .to_vec();
+    assert_eq!(fetched, blob);
+    assert!(!fetched.windows(6).any(|w| w == b"secret"));
+
+    // A recipient with the fragment key decrypts it.
+    let opened = onyx_crypto::share_open(&key, &fetched).unwrap();
+    assert_eq!(opened, html.as_bytes());
+
+    // The viewer page is served publicly and references WebCrypto.
+    let viewer = reqwest::blocking::get(format!("{server}/s/{id}"))
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(viewer.contains("AES-GCM"));
+    assert!(viewer.contains("location.hash"));
+
+    // The link's fragment is base64url of the key (viewer-compatible).
+    let fragment = BASE64URL_NOPAD.encode(&key);
+    assert!(!fragment.contains('+') && !fragment.contains('/'));
+
+    // Revoke: only the owning device can, and then it's gone.
+    device.client.delete_share(id).unwrap();
+    let gone = reqwest::blocking::get(format!("{server}/v1/shares/{id}"))
+        .unwrap()
+        .status();
+    assert_eq!(gone.as_u16(), 404);
+}

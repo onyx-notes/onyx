@@ -71,6 +71,13 @@ pub fn app(state: Arc<ServerState>) -> Router {
             post(routes::enroll_respond).get(routes::enroll_claim),
         )
         .route(
+            "/v1/shares/{id}",
+            axum::routing::put(routes::put_share)
+                .get(routes::get_share)
+                .delete(routes::delete_share),
+        )
+        .route("/s/{id}", get(routes::share_viewer))
+        .route(
             "/v1/vaults/{vault}/blobs/{hash}",
             axum::routing::put(routes::put_blob)
                 .head(routes::head_blob)

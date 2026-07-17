@@ -300,3 +300,117 @@ pub async fn enroll_claim(
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "no response yet".into()))
 }
+
+// ---------------------------------------------------------------------------
+// Single-note shares: encrypted blob + a public viewer. The decryption key
+// lives only in the link fragment, so the server is zero-knowledge here too.
+// ---------------------------------------------------------------------------
+
+const MAX_SHARE_BYTES: usize = 8 * 1024 * 1024;
+
+fn valid_share_id(id: &str) -> bool {
+    (8..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+pub async fn put_share(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    if !valid_share_id(&id) || body.is_empty() || body.len() > MAX_SHARE_BYTES {
+        return Err((StatusCode::BAD_REQUEST, "invalid share".into()));
+    }
+    state
+        .db
+        .put_share(&id, device, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(StatusCode::CREATED)
+}
+
+/// Public: return the raw ciphertext for a share. No auth — the fragment
+/// key is the capability, and the server can't read the content anyway.
+pub async fn get_share(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+) -> Result<Vec<u8>, RouteError> {
+    state
+        .db
+        .get_share(&id)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown share".into()))
+}
+
+pub async fn delete_share(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let deleted = state
+        .db
+        .delete_share(&id, device)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "not your share or unknown".into()))
+    }
+}
+
+/// The public viewer page: fetches the ciphertext, reads the AES-GCM key
+/// from the URL fragment, decrypts with WebCrypto, and displays the
+/// pre-rendered HTML. All decryption is client-side; the fragment is never
+/// sent to any server.
+pub async fn share_viewer() -> axum::response::Html<&'static str> {
+    axum::response::Html(SHARE_VIEWER_HTML)
+}
+
+const SHARE_VIEWER_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared note · Onyx</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto;
+         padding: 0 1rem; line-height: 1.65; background: #16161d; color: #e6e6ec; }
+  @media (prefers-color-scheme: light) { body { background: #fbfbfd; color: #1d1d26; } }
+  pre { background: #00000022; padding: .6rem; border-radius: 6px; overflow-x: auto; }
+  code { font-family: ui-monospace, monospace; }
+  img { max-width: 100%; }
+  table { border-collapse: collapse; } th,td { border: 1px solid #8884; padding: 4px 10px; }
+  .onyx-wikilink { color: #8b7ff5; }
+  #err { color: #f56b6b; }
+  footer { margin-top: 3rem; font-size: 12px; opacity: .6; }
+</style></head>
+<body>
+<div id="content">Decrypting…</div>
+<div id="err"></div>
+<footer>End-to-end encrypted share · served by your Onyx server, which cannot read it.</footer>
+<script type="module">
+const id = location.pathname.split('/').pop();
+const keyB64 = location.hash.slice(1);
+const b64urlToBytes = (s) => {
+  s = s.replace(/-/g,'+').replace(/_/g,'/'); while (s.length % 4) s += '=';
+  return Uint8Array.from(atob(s), c => c.charCodeAt(0));
+};
+try {
+  if (!keyB64) throw new Error('This link is missing its decryption key.');
+  const rawKey = b64urlToBytes(keyB64);
+  const resp = await fetch('/v1/shares/' + encodeURIComponent(id));
+  if (!resp.ok) throw new Error('Share not found or revoked.');
+  const blob = new Uint8Array(await resp.arrayBuffer());
+  const nonce = blob.slice(0, 12), ct = blob.slice(12);
+  const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, key, ct);
+  document.getElementById('content').innerHTML = new TextDecoder().decode(plain);
+} catch (e) {
+  document.getElementById('content').textContent = '';
+  document.getElementById('err').textContent = String(e.message || e);
+}
+</script>
+</body></html>"#;

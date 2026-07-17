@@ -1423,97 +1423,128 @@ pub fn keychain_available() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Note history (time machine)
+// Single-note E2EE share links
 // ---------------------------------------------------------------------------
+
+const SHARES_PATH: &str = ".onyx/shares.json";
+
+fn base64url(bytes: &[u8]) -> String {
+    data_encoding::BASE64URL_NOPAD.encode(bytes)
+}
+
+fn load_shares(engine: &Engine) -> std::collections::HashMap<String, String> {
+    onyx_core::NotePath::new(SHARES_PATH)
+        .ok()
+        .and_then(|path| engine.vault().fs().read(&path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn save_shares(
+    engine: &Engine,
+    shares: &std::collections::HashMap<String, String>,
+) -> CmdResult<()> {
+    let path = onyx_core::NotePath::new(SHARES_PATH).expect("static");
+    engine
+        .vault()
+        .fs()
+        .write_atomic(&path, &serde_json::to_vec_pretty(shares).map_err(err)?)
+        .map_err(err)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NoteVersion {
-    pub created_ms: u64,
-    /// Hex plaintext hash (distinguishes identical-looking versions).
-    pub hash: String,
+pub struct ShareLink {
+    pub id: String,
+    pub url: String,
 }
 
-/// Saved versions of a note, newest first.
+/// Share a note as an end-to-end encrypted link. Renders the note to HTML,
+/// seals it with a fresh AES-GCM key, uploads the ciphertext, and returns
+/// a link whose fragment carries the key (never sent to the server).
 #[tauri::command]
-pub fn note_history(state: State<'_, AppState>, path: String) -> CmdResult<Vec<NoteVersion>> {
+pub async fn create_share(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<ShareLink> {
     let note = parse_path(&path)?;
+
+    let (server_url, html) = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        let config = crate::sync::load_config(engine.vault())
+            .ok_or("enable sync first — shares use your sync server")?;
+        let source = engine.vault().read_text(&note).map_err(err)?;
+        (config.server_url, onyx_md::to_html(&source))
+    };
+
+    let (key, blob) = onyx_crypto::share_seal(html.as_bytes());
+    let mut id_bytes = [0u8; 12];
+    getrandom::fill(&mut id_bytes).map_err(err)?;
+    let id = base64url(&id_bytes).replace('_', "-"); // id charset is [A-Za-z0-9-]
+
+    let device_path = app_data(&app)?.join("device.key");
+    let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+    let mut client = crate::sync::SyncClient::new(&server_url, device).map_err(err)?;
+    let id_for_upload = id.clone();
+    tauri::async_runtime::spawn_blocking(move || client.put_share(&id_for_upload, blob))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
+
+    // Remember the share so it can be listed/revoked.
     state.with_engine(|engine| {
-        let id = engine.vault().note_id(&note);
-        Ok(engine
-            .history()
-            .versions(id)
-            .map_err(err)?
+        let mut shares = load_shares(engine);
+        shares.insert(id.clone(), path.clone());
+        save_shares(engine, &shares)
+    })?;
+
+    let url = format!(
+        "{}/s/{id}#{}",
+        server_url.trim_end_matches('/'),
+        base64url(&key)
+    );
+    Ok(ShareLink { id, url })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareEntry {
+    pub id: String,
+    pub path: String,
+}
+
+#[tauri::command]
+pub fn list_shares(state: State<'_, AppState>) -> CmdResult<Vec<ShareEntry>> {
+    state.with_engine(|engine| {
+        Ok(load_shares(engine)
             .into_iter()
-            .map(|version| NoteVersion {
-                created_ms: version.created_ms,
-                hash: version
-                    .hash
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-            })
+            .map(|(id, path)| ShareEntry { id, path })
             .collect())
     })
 }
 
-/// Content of a specific past version (for the diff/preview).
+/// Revoke a share: delete it from the server and forget it locally.
 #[tauri::command]
-pub fn note_version_content(
-    state: State<'_, AppState>,
-    path: String,
-    created_ms: u64,
-) -> CmdResult<String> {
-    let note = parse_path(&path)?;
+pub async fn revoke_share(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let server_url = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        crate::sync::load_config(engine.vault())
+            .ok_or("sync not configured")?
+            .server_url
+    };
+    let device_path = app_data(&app)?.join("device.key");
+    let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+    let mut client = crate::sync::SyncClient::new(&server_url, device).map_err(err)?;
+    let id_for_delete = id.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || client.delete_share(&id_for_delete))
+        .await
+        .map_err(err)?;
     state.with_engine(|engine| {
-        let id = engine.vault().note_id(&note);
-        engine
-            .history()
-            .get(id, created_ms)
-            .map_err(err)?
-            .ok_or_else(|| "version not found".to_owned())
-    })
-}
-
-/// Restore a note to a past version (itself recorded, so it's undoable).
-#[tauri::command]
-pub fn restore_note_version(
-    state: State<'_, AppState>,
-    path: String,
-    created_ms: u64,
-) -> CmdResult<()> {
-    let note = parse_path(&path)?;
-    state.with_engine(|engine| engine.restore_version(&note, created_ms).map_err(err))
-}
-
-// ---------------------------------------------------------------------------
-// onyx-query blocks
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueryOutput {
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
-    pub error: Option<String>,
-}
-
-/// Execute an onyx-query block against the current vault index.
-#[tauri::command]
-pub fn run_query_block(state: State<'_, AppState>, source: String) -> CmdResult<QueryOutput> {
-    state.with_engine(|engine| {
-        let rows = engine.index().query_rows().map_err(err)?;
-        match onyx_core::run_query(&source, &rows) {
-            Ok(result) => Ok(QueryOutput {
-                columns: result.columns,
-                rows: result.rows,
-                error: None,
-            }),
-            Err(message) => Ok(QueryOutput {
-                columns: Vec::new(),
-                rows: Vec::new(),
-                error: Some(message),
-            }),
-        }
+        let mut shares = load_shares(engine);
+        shares.remove(&id);
+        save_shares(engine, &shares)
     })
 }

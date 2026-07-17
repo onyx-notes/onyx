@@ -89,6 +89,16 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export interface ShareLink {
+  id: string;
+  url: string;
+}
+
+export interface ShareEntry {
+  id: string;
+  path: string;
+}
+
 export interface QueryOutput {
   columns: string[];
   rows: string[][];
@@ -230,6 +240,9 @@ export const api = {
     invoke<number>("agent_apply", { proposals }),
   runQueryBlock: (source: string) =>
     invoke<QueryOutput>("run_query_block", { source }),
+  createShare: (path: string) => invoke<ShareLink>("create_share", { path }),
+  listShares: () => invoke<ShareEntry[]>("list_shares"),
+  revokeShare: (id: string) => invoke<void>("revoke_share", { id }),
   noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),
   noteVersionContent: (path: string, createdMs: number) =>
     invoke<string>("note_version_content", { path, createdMs }),

@@ -119,5 +119,9 @@
   "history.empty": "No saved versions yet",
   "history.pick": "Select a version to preview",
   "history.diffNote": "− past version   + current",
-  "history.restore": "Restore this version"
+  "history.restore": "Restore this version",
+  "share.title": "Share this note (encrypted link)",
+  "share.created": "Encrypted share link created",
+  "share.copied": "Encrypted share link copied to clipboard",
+  "share.link": "share link"
 }

@@ -112,16 +112,6 @@ pub struct TagCount {
     pub count: u64,
 }
 
-/// A note plus the metadata a query block filters/sorts on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryRow {
-    pub path: String,
-    pub title: String,
-    pub tags: Vec<String>,
-    /// Frontmatter key → raw JSON value string.
-    pub frontmatter: std::collections::HashMap<String, String>,
-}
-
 /// A heading row for outline views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeadingRow {
@@ -563,57 +553,6 @@ impl Store {
     /// All nodes and raw internal link edges `(src, target_key)` in one
     /// pass — the graph resolves targets itself with prebuilt maps instead
     /// of one query per link.
-    /// All markdown notes with their tags + frontmatter, for query blocks.
-    pub fn query_rows(&self) -> Result<Vec<QueryRow>, IndexError> {
-        use std::collections::HashMap;
-
-        let mut notes = self
-            .conn
-            .prepare("SELECT id, path, title FROM notes WHERE is_markdown = 1 ORDER BY path_key")?;
-        let base: Vec<(Vec<u8>, String, String)> = notes
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect::<Result<_, _>>()?;
-
-        let mut tags_by_note: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
-        let mut tag_stmt = self.conn.prepare("SELECT note_id, tag FROM tags")?;
-        for row in tag_stmt.query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
-        })? {
-            let (note_id, tag) = row?;
-            tags_by_note.entry(note_id).or_default().push(tag);
-        }
-
-        let mut fm_by_note: HashMap<Vec<u8>, HashMap<String, String>> = HashMap::new();
-        let mut fm_stmt = self
-            .conn
-            .prepare("SELECT note_id, key, value_json FROM frontmatter")?;
-        for row in fm_stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, Vec<u8>>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })? {
-            let (note_id, key, value) = row?;
-            fm_by_note.entry(note_id).or_default().insert(key, value);
-        }
-
-        Ok(base
-            .into_iter()
-            .map(|(id, path, title)| {
-                let mut tags = tags_by_note.remove(&id).unwrap_or_default();
-                tags.sort();
-                tags.dedup();
-                QueryRow {
-                    path,
-                    title,
-                    tags,
-                    frontmatter: fm_by_note.remove(&id).unwrap_or_default(),
-                }
-            })
-            .collect())
-    }
-
     pub fn graph_data(&self) -> Result<GraphData, IndexError> {
         let mut node_statement = self
             .conn

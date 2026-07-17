@@ -228,6 +228,37 @@ impl SyncClient {
         &self.base
     }
 
+    pub fn put_share(&mut self, id: &str, blob: Vec<u8>) -> Result<(), SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .put(format!("{}/v1/shares/{id}", self.base))
+            .bearer_auth(token)
+            .body(blob)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(SyncSetupError::Server(response.status().to_string()))
+        }
+    }
+
+    pub fn delete_share(&mut self, id: &str) -> Result<(), SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .delete(format!("{}/v1/shares/{id}", self.base))
+            .bearer_auth(token)
+            .send()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(SyncSetupError::Server(response.status().to_string()))
+        }
+    }
+
     /// POST raw bytes; Ok(true) on 2xx, Ok(false) on 409/404 (caller
     /// semantics), Err otherwise.
     pub(crate) fn http_post_bytes(

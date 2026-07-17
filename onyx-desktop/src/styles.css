@@ -928,3 +928,6 @@ body.full-width .reading-view { max-width: none; }
   font-size: 12px;
 }
 .onyx-query.is-empty { color: var(--onyx-text-muted); font-style: italic; }
+
+.share-link { color: var(--onyx-accent); text-decoration: none; cursor: pointer; }
+.share-link:hover { text-decoration: underline; }

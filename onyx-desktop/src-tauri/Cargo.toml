@@ -42,5 +42,6 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+data-encoding = { workspace = true }
 onyx-server = { workspace = true }
 tempfile = { workspace = true }
