@@ -89,6 +89,12 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export interface PublishReport {
+  pages: number;
+  attachments: number;
+  outputDir: string;
+}
+
 export interface ShareLink {
   id: string;
   url: string;
@@ -241,6 +247,8 @@ export const api = {
   runQueryBlock: (source: string) =>
     invoke<QueryOutput>("run_query_block", { source }),
   createShare: (path: string) => invoke<ShareLink>("create_share", { path }),
+  publishSite: (folder: string, outputDir: string, siteTitle: string) =>
+    invoke<PublishReport>("publish_site", { folder, outputDir, siteTitle }),
   listShares: () => invoke<ShareEntry[]>("list_shares"),
   revokeShare: (id: string) => invoke<void>("revoke_share", { id }),
   noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),

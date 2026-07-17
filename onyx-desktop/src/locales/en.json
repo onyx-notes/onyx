@@ -123,5 +123,12 @@
   "share.title": "Share this note (encrypted link)",
   "share.created": "Encrypted share link created",
   "share.copied": "Encrypted share link copied to clipboard",
-  "share.link": "share link"
+  "share.link": "share link",
+  "publish.folder": "Folder to publish",
+  "publish.title": "Site title",
+  "publish.dir": "Output directory",
+  "publish.hint": "Exports a static HTML site — host it anywhere",
+  "publish.run": "Publish",
+  "publish.working": "Publishing…",
+  "publish.done": "Published {pages} pages to {dir}"
 }

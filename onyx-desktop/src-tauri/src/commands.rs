@@ -1644,3 +1644,104 @@ pub fn run_query_block(state: State<'_, AppState>, source: String) -> CmdResult<
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// Self-hosted Publish
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishReport {
+    pub pages: usize,
+    pub attachments: usize,
+    pub output_dir: String,
+}
+
+/// Export the vault (or a folder prefix) to a static HTML site at
+/// `output_dir`. `folder` empty = whole vault.
+#[tauri::command]
+pub fn publish_site(
+    state: State<'_, AppState>,
+    folder: String,
+    output_dir: String,
+    site_title: String,
+) -> CmdResult<PublishReport> {
+    use crate::publish::{SiteOptions, SourceNote, build_site, referenced_attachments};
+
+    let prefix = folder.trim_matches('/').to_lowercase();
+    let out = std::path::PathBuf::from(&output_dir);
+    if out.as_os_str().is_empty() {
+        return Err("output directory required".into());
+    }
+
+    let (notes, attachments) = state.with_engine(|engine| {
+        let mut notes = Vec::new();
+        for record in engine.index().all_notes().map_err(err)? {
+            if !record.is_markdown {
+                continue;
+            }
+            let path = record.path.as_str();
+            if !prefix.is_empty() && !path.to_lowercase().starts_with(&format!("{prefix}/")) {
+                continue;
+            }
+            let content = engine.vault().read_text(&record.path).map_err(err)?;
+            // Re-root under the folder so links stay relative to the site.
+            let site_path = if prefix.is_empty() {
+                path.to_owned()
+            } else {
+                path[prefix.len() + 1..].to_owned()
+            };
+            notes.push(SourceNote {
+                path: site_path,
+                content,
+            });
+        }
+
+        // Resolve referenced attachments to real vault files + their bytes.
+        let mut attachments = Vec::new();
+        for target in referenced_attachments(&notes) {
+            if let Ok(Some(id)) = engine.index().resolve(&target) {
+                if let Ok(Some(record)) = engine.index().note(id) {
+                    if let Ok(bytes) = engine.vault().read_bytes(&record.path) {
+                        attachments.push((target, bytes));
+                    }
+                }
+            }
+        }
+        Ok((notes, attachments))
+    })?;
+
+    let files = build_site(
+        &notes,
+        &SiteOptions {
+            title: if site_title.is_empty() {
+                "Onyx".into()
+            } else {
+                site_title
+            },
+        },
+    );
+
+    std::fs::create_dir_all(&out).map_err(err)?;
+    for file in &files {
+        let target = out.join(&file.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(&target, &file.contents).map_err(err)?;
+    }
+    let assets_dir = out.join("assets");
+    for (name, bytes) in &attachments {
+        let target = assets_dir.join(name);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(err)?;
+        }
+        std::fs::write(target, bytes).map_err(err)?;
+    }
+
+    Ok(PublishReport {
+        pages: notes.len(),
+        attachments: attachments.len(),
+        output_dir,
+    })
+}

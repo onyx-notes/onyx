@@ -55,6 +55,25 @@ export default function SettingsModal(props: {
     "https://raw.githubusercontent.com/onyx-notes/plugins/main/registry.json",
   );
   const [pluginMsg, setPluginMsg] = createSignal<string | null>(null);
+  const [publishFolder, setPublishFolder] = createSignal("");
+  const [publishDir, setPublishDir] = createSignal("");
+  const [publishTitle, setPublishTitle] = createSignal("");
+  const [publishMsg, setPublishMsg] = createSignal<string | null>(null);
+  const doPublish = async () => {
+    setPublishMsg(t("publish.working"));
+    try {
+      const report = await api.publishSite(
+        publishFolder().trim(),
+        publishDir().trim(),
+        publishTitle().trim(),
+      );
+      setPublishMsg(
+        t("publish.done", { pages: report.pages, dir: report.outputDir }),
+      );
+    } catch (error) {
+      setPublishMsg(String(error));
+    }
+  };
   const browse = async () => {
     setPluginMsg(null);
     try {
@@ -390,6 +409,44 @@ export default function SettingsModal(props: {
               </For>
             </Show>
             <div class="settings-imported">{t("plugins.restartHint")}</div>
+          </div>
+
+          <div class="settings-import">
+            <div class="settings-row">
+              <span>{t("publish.folder")}</span>
+              <input
+                type="text"
+                placeholder="(whole vault)"
+                value={publishFolder()}
+                onInput={(event) => setPublishFolder(event.currentTarget.value)}
+              />
+            </div>
+            <div class="settings-row">
+              <span>{t("publish.title")}</span>
+              <input
+                type="text"
+                value={publishTitle()}
+                onInput={(event) => setPublishTitle(event.currentTarget.value)}
+              />
+            </div>
+            <div class="settings-row">
+              <span>{t("publish.dir")}</span>
+              <input
+                type="text"
+                placeholder="/path/to/output"
+                value={publishDir()}
+                onInput={(event) => setPublishDir(event.currentTarget.value)}
+              />
+            </div>
+            <div class="settings-row">
+              <span class="settings-caps">{t("publish.hint")}</span>
+              <button class="settings-button" onClick={() => void doPublish()}>
+                {t("publish.run")}
+              </button>
+            </div>
+            <Show when={publishMsg()}>
+              {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
 
             <div class="settings-row">
               <input

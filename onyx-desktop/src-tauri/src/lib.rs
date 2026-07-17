@@ -10,6 +10,7 @@ pub mod backup;
 mod commands;
 mod engine;
 mod protocol;
+pub mod publish;
 pub mod rag;
 mod secrets;
 mod settings;
@@ -86,6 +87,7 @@ pub fn run() {
             commands::create_share,
             commands::list_shares,
             commands::revoke_share,
+            commands::publish_site,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");
