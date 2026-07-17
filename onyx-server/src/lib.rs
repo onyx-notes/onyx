@@ -83,6 +83,14 @@ pub fn app(state: Arc<ServerState>) -> Router {
                 .head(routes::head_blob)
                 .get(routes::get_blob),
         )
+        .route(
+            "/v1/vaults/{vault}/blobs/{hash}/status",
+            get(routes::blob_status),
+        )
+        .route(
+            "/v1/vaults/{vault}/blobs/{hash}/chunks/{idx}",
+            axum::routing::put(routes::put_blob_chunk),
+        )
         .with_state(state)
 }
 

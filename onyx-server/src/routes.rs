@@ -4,14 +4,16 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::Response;
 use data_encoding::HEXLOWER;
 use serde::{Deserialize, Serialize};
 
 use crate::ServerState;
 use crate::auth::authenticate;
+use crate::db::CHECKPOINT_THRESHOLD;
 
 type RouteError = (StatusCode, String);
 
@@ -140,10 +142,23 @@ pub async fn pull_ops(
         .ops_since(vault, params.since, PULL_LIMIT)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
 
+    // Ask the client to checkpoint any doc whose op history has grown long,
+    // so the server can prune the backlog. Only meaningful once the client
+    // is caught up (further pages carry no new docs to hint about).
+    let checkpoint_hints = if head_seq == 0 || params.since + (ops.len() as u64) >= head_seq {
+        state
+            .db
+            .docs_over_threshold(vault, CHECKPOINT_THRESHOLD)
+            .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    } else {
+        Vec::new()
+    };
+
     onyx_proto::encode(&onyx_proto::OpsBatch {
         version: onyx_proto::PROTOCOL_VERSION,
         ops,
         head_seq,
+        checkpoint_hints,
     })
     .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
 }
@@ -153,12 +168,17 @@ pub async fn pull_ops(
 // ---------------------------------------------------------------------------
 
 /// Reject absurd uploads (self-host default; configurable later).
-const MAX_BLOB_BYTES: usize = 512 * 1024 * 1024;
+const MAX_BLOB_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Upper bound on a single chunk body (the client's chunk size plus slack).
+const MAX_CHUNK_BYTES: usize = onyx_proto::BLOB_CHUNK_BYTES * 2;
 
 fn valid_blob_hash(hash: &str) -> bool {
     hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Single-shot upload for a small blob (≤ one chunk). Larger blobs use the
+/// chunked lane so a dropped connection never restarts the whole transfer.
 pub async fn put_blob(
     State(state): State<Arc<ServerState>>,
     Path((vault, hash)): Path<(String, String)>,
@@ -171,12 +191,14 @@ pub async fn put_blob(
     if !valid_blob_hash(&hash) {
         return Err((StatusCode::BAD_REQUEST, "invalid blob hash".into()));
     }
-    if body.len() > MAX_BLOB_BYTES {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "blob too large".into()));
+    if body.len() > MAX_CHUNK_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "use the chunked lane for large blobs".into(),
+        ));
     }
     // Content addressing is verifiable without keys: hash(ciphertext).
-    let actual = blake3::hash(&body).to_hex().to_string();
-    if actual != hash {
+    if blake3::hash(&body).to_hex().as_str() != hash {
         return Err((StatusCode::BAD_REQUEST, "hash mismatch".into()));
     }
     state
@@ -186,26 +208,60 @@ pub async fn put_blob(
     Ok(StatusCode::CREATED)
 }
 
-pub async fn head_blob(
+#[derive(Deserialize)]
+pub struct ChunkParams {
+    pub total: u32,
+    pub size: u64,
+}
+
+/// Upload one chunk of a large blob. Idempotent per index, so a client that
+/// dropped mid-transfer re-sends only the chunks the server is missing.
+/// Returns 201 once the final chunk completes and verifies, 200 otherwise.
+pub async fn put_blob_chunk(
     State(state): State<Arc<ServerState>>,
-    Path((vault, hash)): Path<(String, String)>,
+    Path((vault, hash, idx)): Path<(String, String, u32)>,
+    Query(params): Query<ChunkParams>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<StatusCode, RouteError> {
     let device = authenticate(&state, &headers)?;
     let vault = vault_id_from(&vault)?;
     require_member(&state, vault, device)?;
-    let exists = state
+    if !valid_blob_hash(&hash) {
+        return Err((StatusCode::BAD_REQUEST, "invalid blob hash".into()));
+    }
+    if params.total == 0 || idx >= params.total {
+        return Err((StatusCode::BAD_REQUEST, "chunk index out of range".into()));
+    }
+    if params.size > MAX_BLOB_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "blob too large".into()));
+    }
+    if body.len() > MAX_CHUNK_BYTES {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "chunk too large".into()));
+    }
+    state
         .db
-        .has_blob(vault, &hash)
+        .blob_begin(vault, &hash, params.total, params.size)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    Ok(if exists {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
-    })
+    state
+        .db
+        .blob_put_chunk(vault, &hash, idx, &body)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    match state.db.blob_try_complete(vault, &hash) {
+        Ok(true) => Ok(StatusCode::CREATED),
+        Ok(false) => Ok(StatusCode::OK),
+        // Reassembly hashed to the wrong value: the client uploaded corrupt
+        // or mismatched chunks. The partial upload was discarded; ask again.
+        Err(crate::db::DbError::HashMismatch) => {
+            Err((StatusCode::BAD_REQUEST, "hash mismatch on reassembly".into()))
+        }
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+    }
 }
 
-pub async fn get_blob(
+/// Resume status: which chunks the server already holds. A client queries
+/// this before (re)uploading so it skips finished chunks.
+pub async fn blob_status(
     State(state): State<Arc<ServerState>>,
     Path((vault, hash)): Path<(String, String)>,
     headers: HeaderMap,
@@ -213,11 +269,113 @@ pub async fn get_blob(
     let device = authenticate(&state, &headers)?;
     let vault = vault_id_from(&vault)?;
     require_member(&state, vault, device)?;
-    state
+    let status = state
+        .db
+        .blob_status(vault, &hash)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "no such upload".into()))?;
+    onyx_proto::encode(&status)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+pub async fn head_blob(
+    State(state): State<Arc<ServerState>>,
+    Path((vault, hash)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let vault = vault_id_from(&vault)?;
+    require_member(&state, vault, device)?;
+    // Report the size (so a downloader can plan its ranges) only when the
+    // blob is complete; a partial blob is treated as absent.
+    let size = state
+        .db
+        .blob_size(vault, &hash)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let builder = Response::builder().header(header::ACCEPT_RANGES, "bytes");
+    let response = match size {
+        Some(size) => builder
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, size)
+            .body(Body::empty()),
+        None => builder.status(StatusCode::NOT_FOUND).body(Body::empty()),
+    };
+    response.map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+/// Parse an HTTP `Range: bytes=start-[end]` header into an inclusive
+/// `(start, end)` within `size`. `None` if absent or unsatisfiable.
+fn parse_range(headers: &HeaderMap, size: u64) -> Option<(u64, u64)> {
+    let spec = headers
+        .get(header::RANGE)?
+        .to_str()
+        .ok()?
+        .strip_prefix("bytes=")?;
+    let (start_text, end_text) = spec.split_once('-')?;
+    let start: u64 = start_text.trim().parse().ok()?;
+    let end: u64 = if end_text.trim().is_empty() {
+        size.saturating_sub(1)
+    } else {
+        end_text.trim().parse().ok()?
+    };
+    if size == 0 || start > end || start >= size {
+        return None;
+    }
+    Some((start, end.min(size - 1)))
+}
+
+pub async fn get_blob(
+    State(state): State<Arc<ServerState>>,
+    Path((vault, hash)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, RouteError> {
+    let device = authenticate(&state, &headers)?;
+    let vault = vault_id_from(&vault)?;
+    require_member(&state, vault, device)?;
+    let server_error =
+        |error: crate::db::DbError| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    let build_error =
+        |error: axum::http::Error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+
+    let Some(size) = state.db.blob_size(vault, &hash).map_err(server_error)? else {
+        return Err((StatusCode::NOT_FOUND, "unknown blob".into()));
+    };
+
+    // Range request → 206 with just the requested window (bounded RAM, and
+    // the client's resume lane). A present-but-unsatisfiable range → 416.
+    if headers.contains_key(header::RANGE) {
+        let Some((start, end)) = parse_range(&headers, size) else {
+            return Err((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                "unsatisfiable range".into(),
+            ));
+        };
+        let len = end - start + 1;
+        let data = state
+            .db
+            .blob_read_range(vault, &hash, start, len)
+            .map_err(server_error)?
+            .ok_or((StatusCode::NOT_FOUND, "unknown blob".into()))?;
+        return Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
+            .header(header::CONTENT_LENGTH, data.len())
+            .body(Body::from(data))
+            .map_err(build_error);
+    }
+
+    let data = state
         .db
         .get_blob(vault, &hash)
-        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
-        .ok_or((StatusCode::NOT_FOUND, "unknown blob".into()))
+        .map_err(server_error)?
+        .ok_or((StatusCode::NOT_FOUND, "unknown blob".into()))?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, data.len())
+        .body(Body::from(data))
+        .map_err(build_error)
 }
 
 // ---------------------------------------------------------------------------

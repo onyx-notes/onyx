@@ -147,10 +147,11 @@ async fn two_devices_sync_an_encrypted_note() {
     let update = alice_doc.export_from(&[]).unwrap();
     let push = onyx_proto::PushOps {
         version: onyx_proto::PROTOCOL_VERSION,
-        ops: vec![onyx_proto::EncOp {
-            doc_id: [1; 16],
-            ciphertext: onyx_crypto::encrypt(&vault_key, &update),
-        }],
+        ops: vec![onyx_proto::EncOp::incremental(
+            [1; 16],
+            &update,
+            onyx_crypto::encrypt(&vault_key, &update),
+        )],
     };
     let (status, ack_bytes) = request(
         &app,
@@ -197,10 +198,11 @@ async fn two_devices_sync_an_encrypted_note() {
     let bob_update = bob_doc.export_from(&alice_doc.version()).unwrap();
     let push = onyx_proto::PushOps {
         version: onyx_proto::PROTOCOL_VERSION,
-        ops: vec![onyx_proto::EncOp {
-            doc_id: [1; 16],
-            ciphertext: onyx_crypto::encrypt(&vault_key, &bob_update),
-        }],
+        ops: vec![onyx_proto::EncOp::incremental(
+            [1; 16],
+            &bob_update,
+            onyx_crypto::encrypt(&vault_key, &bob_update),
+        )],
     };
     let (status, _) = request(
         &app,
@@ -367,12 +369,14 @@ async fn server_never_stores_plaintext() {
 
     let secret = "EXTREMELY-SECRET-CONTENT-marker";
     let doc = SyncDoc::from_text(1, secret).unwrap();
+    let update = doc.export_from(&[]).unwrap();
     let push = onyx_proto::PushOps {
         version: onyx_proto::PROTOCOL_VERSION,
-        ops: vec![onyx_proto::EncOp {
-            doc_id: [1; 16],
-            ciphertext: onyx_crypto::encrypt(&vault_key, &doc.export_from(&[]).unwrap()),
-        }],
+        ops: vec![onyx_proto::EncOp::incremental(
+            [1; 16],
+            &update,
+            onyx_crypto::encrypt(&vault_key, &update),
+        )],
     };
     request(
         &app,

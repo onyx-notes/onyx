@@ -144,5 +144,16 @@
   "mobile.vaultEncryptPrompt": "Encrypt this vault with a passphrase?",
   "mobile.switchVault": "Switch",
   "mobile.encrypted": "encrypted",
-  "mobile.plain": "plaintext"
+  "mobile.plain": "plaintext",
+  "mobile.toolbar.bold": "Bold",
+  "mobile.toolbar.italic": "Italic",
+  "mobile.toolbar.heading": "Heading",
+  "mobile.toolbar.list": "Bullet list",
+  "mobile.toolbar.task": "Task",
+  "mobile.toolbar.wikilink": "Wikilink",
+  "mobile.toolbar.code": "Inline code",
+  "mobile.toolbar.indent": "Indent",
+  "mobile.toolbar.outdent": "Outdent",
+  "mobile.toolbar.undo": "Undo",
+  "mobile.toolbar.redo": "Redo"
 }

@@ -7,7 +7,9 @@
 //! id from it, so nothing secret is ever written to disk for them. The
 //! QR + SAS + HPKE enrollment flow from the plan supersedes this later.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use data_encoding::HEXLOWER;
 use ed25519_dalek::{Signer, SigningKey};
@@ -149,6 +151,10 @@ pub struct SyncClient {
     base: String,
     device: DeviceIdentity,
     token: Option<String>,
+    /// Where partial large-blob downloads are staged so they survive a
+    /// dropped connection (and an app restart). `None` falls back to a
+    /// single whole-blob GET — correct, just not resumable.
+    blob_cache: Option<PathBuf>,
 }
 
 impl SyncClient {
@@ -162,7 +168,14 @@ impl SyncClient {
             base: server_url.trim_end_matches('/').to_owned(),
             device,
             token: None,
+            blob_cache: None,
         })
+    }
+
+    /// Stage resumable large-blob downloads under `dir`. Set once when the
+    /// sync agent starts for a vault.
+    pub fn set_blob_cache(&mut self, dir: PathBuf) {
+        self.blob_cache = Some(dir);
     }
 
     fn post_json(
@@ -375,7 +388,22 @@ impl SyncClient {
         Ok(response.status().is_success())
     }
 
+    /// Upload an encrypted blob. Small blobs go in one request; large ones
+    /// are chunked so a dropped connection loses at most one chunk — the
+    /// next attempt queries the server and re-sends only what's missing.
     pub fn put_blob(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+        ciphertext: Vec<u8>,
+    ) -> Result<(), SyncSetupError> {
+        if ciphertext.len() <= onyx_proto::BLOB_CHUNK_BYTES {
+            return self.put_blob_whole(vault_id, hash, ciphertext);
+        }
+        self.put_blob_chunked(vault_id, hash, &ciphertext)
+    }
+
+    fn put_blob_whole(
         &mut self,
         vault_id: [u8; 16],
         hash: &str,
@@ -399,7 +427,133 @@ impl SyncClient {
         Ok(())
     }
 
+    fn put_blob_chunked(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+        ciphertext: &[u8],
+    ) -> Result<(), SyncSetupError> {
+        let chunk = onyx_proto::BLOB_CHUNK_BYTES;
+        let total = ciphertext.len().div_ceil(chunk) as u32;
+        let size = ciphertext.len() as u64;
+
+        // Resume: skip chunks the server already holds (or bail if the whole
+        // blob is already there, e.g. a peer uploaded it or a prior attempt
+        // finished after its ack was lost).
+        let already: HashSet<u32> = match self.blob_status(vault_id, hash)? {
+            Some(status) if status.complete => return Ok(()),
+            Some(status) => status.present.into_iter().collect(),
+            None => HashSet::new(),
+        };
+
+        let token = self.ensure_auth()?;
+        let vault_hex = HEXLOWER.encode(&vault_id);
+        for idx in 0..total {
+            if already.contains(&idx) {
+                continue;
+            }
+            let start = idx as usize * chunk;
+            let end = (start + chunk).min(ciphertext.len());
+            let response = self
+                .http
+                .put(format!(
+                    "{}/v1/vaults/{vault_hex}/blobs/{hash}/chunks/{idx}?total={total}&size={size}",
+                    self.base,
+                ))
+                .bearer_auth(&token)
+                .body(ciphertext[start..end].to_vec())
+                .send()
+                .map_err(transport_error)?;
+            if !response.status().is_success() {
+                return Err(SyncSetupError::Server(response.status().to_string()));
+            }
+        }
+        // The server completes and hash-verifies on the final chunk; confirm
+        // before we let the pointer ship.
+        if !self.has_blob(vault_id, hash)? {
+            return Err(SyncSetupError::Server("blob did not complete".into()));
+        }
+        Ok(())
+    }
+
+    /// Resume status for a chunked upload; `None` if never begun.
+    fn blob_status(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+    ) -> Result<Option<onyx_proto::BlobStatus>, SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .get(format!(
+                "{}/v1/vaults/{}/blobs/{hash}/status",
+                self.base,
+                HEXLOWER.encode(&vault_id)
+            ))
+            .bearer_auth(token)
+            .send()
+            .map_err(transport_error)?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(SyncSetupError::Server(response.status().to_string()));
+        }
+        let bytes = response
+            .bytes()
+            .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+        onyx_proto::decode(&bytes)
+            .map(Some)
+            .map_err(|error| SyncSetupError::Server(error.to_string()))
+    }
+
+    /// The size of a complete blob (HEAD), or `None` if absent/incomplete.
+    fn blob_head_size(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+    ) -> Result<Option<u64>, SyncSetupError> {
+        let token = self.ensure_auth()?;
+        let response = self
+            .http
+            .head(format!(
+                "{}/v1/vaults/{}/blobs/{hash}",
+                self.base,
+                HEXLOWER.encode(&vault_id)
+            ))
+            .bearer_auth(token)
+            .send()
+            .map_err(transport_error)?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        Ok(response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|text| text.parse().ok()))
+    }
+
+    /// Download an encrypted blob. Large blobs stream through range requests
+    /// into a `.part` file in the blob cache, so a dropped connection resumes
+    /// from the last byte received instead of restarting. The final bytes are
+    /// hash-verified before use.
     pub fn get_blob(&mut self, vault_id: [u8; 16], hash: &str) -> Result<Vec<u8>, SyncSetupError> {
+        let size = self.blob_head_size(vault_id, hash)?;
+        let cache = self.blob_cache.clone();
+        match (size, cache) {
+            (Some(size), Some(cache)) if size > onyx_proto::BLOB_CHUNK_BYTES as u64 => {
+                self.get_blob_resumable(vault_id, hash, size, &cache)
+            }
+            _ => self.get_blob_whole(vault_id, hash),
+        }
+    }
+
+    fn get_blob_whole(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+    ) -> Result<Vec<u8>, SyncSetupError> {
         let token = self.ensure_auth()?;
         let response = self
             .http
@@ -418,6 +572,67 @@ impl SyncClient {
             .bytes()
             .map(|bytes| bytes.to_vec())
             .map_err(|error| SyncSetupError::Http(error.to_string()))
+    }
+
+    fn get_blob_resumable(
+        &mut self,
+        vault_id: [u8; 16],
+        hash: &str,
+        size: u64,
+        cache: &Path,
+    ) -> Result<Vec<u8>, SyncSetupError> {
+        let chunk = onyx_proto::BLOB_CHUNK_BYTES as u64;
+        std::fs::create_dir_all(cache)?;
+        let part = cache.join(format!("{hash}.part"));
+
+        // Resume from whatever's already on disk; a `.part` longer than the
+        // blob is stale — start over.
+        let mut have = std::fs::metadata(&part).map(|meta| meta.len()).unwrap_or(0);
+        if have > size {
+            std::fs::remove_file(&part)?;
+            have = 0;
+        }
+
+        let token = self.ensure_auth()?;
+        let vault_hex = HEXLOWER.encode(&vault_id);
+        while have < size {
+            let last = (have + chunk - 1).min(size - 1);
+            let response = self
+                .http
+                .get(format!(
+                    "{}/v1/vaults/{vault_hex}/blobs/{hash}",
+                    self.base,
+                ))
+                .bearer_auth(&token)
+                .header(reqwest::header::RANGE, format!("bytes={have}-{last}"))
+                .send()
+                .map_err(transport_error)?;
+            if !response.status().is_success() {
+                return Err(SyncSetupError::Server(response.status().to_string()));
+            }
+            let bytes = response
+                .bytes()
+                .map_err(|error| SyncSetupError::Http(error.to_string()))?;
+            if bytes.is_empty() {
+                break;
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&part)?;
+            file.write_all(&bytes)?;
+            have += bytes.len() as u64;
+        }
+
+        let data = std::fs::read(&part)?;
+        // Integrity gate: a corrupt/truncated assembly is discarded so the
+        // next cycle re-fetches cleanly rather than materializing garbage.
+        if blake3::hash(&data).to_hex().as_str() != hash {
+            std::fs::remove_file(&part)?;
+            return Err(SyncSetupError::Server("blob hash mismatch".into()));
+        }
+        std::fs::remove_file(&part)?;
+        Ok(data)
     }
 
     pub fn pull(
@@ -579,6 +794,17 @@ fn connect_ws(url: &str, token: &str) -> Result<WsSocket, Box<tungstenite::Error
 // The sync cycle (shared by the background agent and tests)
 // ---------------------------------------------------------------------------
 
+/// Map an engine push to a wire op (carrying its idempotency id and
+/// checkpoint flag).
+fn pending_to_encop(push: &crate::engine::PendingPush) -> onyx_proto::EncOp {
+    onyx_proto::EncOp {
+        doc_id: push.doc_id,
+        op_id: push.op_id,
+        ciphertext: push.ciphertext.clone(),
+        checkpoint: push.checkpoint,
+    }
+}
+
 /// One push/pull round trip. Returns the vault paths changed by remote ops.
 pub fn sync_cycle(
     engine: &parking_lot::Mutex<Option<crate::engine::Engine>>,
@@ -617,13 +843,7 @@ pub fn sync_cycle(
         engine.sync_collect().map_err(engine_err)?
     };
     if !pushes.is_empty() {
-        let ops = pushes
-            .iter()
-            .map(|push| onyx_proto::EncOp {
-                doc_id: push.doc_id,
-                ciphertext: push.ciphertext.clone(),
-            })
-            .collect();
+        let ops = pushes.iter().map(pending_to_encop).collect();
         client.push(vault_id, ops)?;
         if let Some(engine) = engine.lock().as_mut() {
             engine.sync_mark_pushed(&pushes).map_err(engine_err)?;
@@ -644,6 +864,28 @@ pub fn sync_cycle(
         };
         changed = engine.sync_apply_remote(&batch.ops).map_err(engine_err)?;
         engine.set_sync_cursor(last).map_err(engine_err)?;
+    }
+
+    // Checkpoint pass: the server asks (via pull hints) for a full-state
+    // checkpoint of any doc whose op log has grown long, so it can prune the
+    // backlog. Push them idempotently; a lost ack just retries next cycle.
+    if !batch.checkpoint_hints.is_empty() {
+        let checkpoints = {
+            let mut guard = engine.lock();
+            let Some(engine) = guard.as_mut() else {
+                return Ok(changed);
+            };
+            engine
+                .sync_collect_checkpoints(&batch.checkpoint_hints)
+                .map_err(engine_err)?
+        };
+        if !checkpoints.is_empty() {
+            let ops = checkpoints.iter().map(pending_to_encop).collect();
+            client.push(vault_id, ops)?;
+            if let Some(engine) = engine.lock().as_mut() {
+                engine.sync_mark_pushed(&checkpoints).map_err(engine_err)?;
+            }
+        }
     }
 
     // Attachment inbox: pointer docs merged during apply; fetch winners

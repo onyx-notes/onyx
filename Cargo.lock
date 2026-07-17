@@ -3600,6 +3600,7 @@ dependencies = [
 name = "onyx-proto"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "postcard",
  "serde",
  "thiserror 2.0.18",

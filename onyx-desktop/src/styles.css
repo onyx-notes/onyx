@@ -1014,6 +1014,19 @@ body.full-width .reading-view { max-width: none; }
   padding: 16px 14px 40vh; /* generous bottom: keeps the caret above the keyboard */
 }
 
+/* Touch targets: a fingertip needs more than a desktop checkbox. */
+body.mobile .cm-onyx-taskbox {
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+}
+
+body.mobile .cm-onyx-wikilink.is-preview {
+  /* Fatten the tap area without changing layout. */
+  padding: 6px 2px;
+  margin: -6px -2px;
+}
+
 .mobile-bottombar {
   display: flex;
   justify-content: space-around;
@@ -1022,6 +1035,40 @@ body.full-width .reading-view { max-width: none; }
   background: var(--onyx-bg-secondary);
   border-top: 1px solid var(--onyx-border);
   flex-shrink: 0;
+}
+
+/* Keyboard up: the formatting toolbar replaces the action bar. */
+.mobile-bottombar.hidden {
+  display: none;
+}
+
+.mobile-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 2px 6px;
+  background: var(--onyx-bg-secondary);
+  border-top: 1px solid var(--onyx-border);
+  flex-shrink: 0;
+  /* No safe-area padding: the keyboard covers the home-indicator zone. */
+}
+
+.mobile-tool {
+  min-width: 44px;
+  min-height: 40px;
+  flex-shrink: 0;
+  font-size: 16px;
+  font-family: var(--onyx-font-mono);
+  color: var(--onyx-text-secondary);
+  border-radius: var(--onyx-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-tool:active {
+  background: var(--onyx-bg-active);
 }
 
 .mobile-new {

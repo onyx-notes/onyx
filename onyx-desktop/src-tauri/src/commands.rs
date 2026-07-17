@@ -400,7 +400,12 @@ pub(crate) fn start_sync(
     };
     let _ = (op_key, root);
 
-    let client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
+    let mut client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
+    // Stage resumable large-blob downloads under the app data dir, keyed by
+    // vault, so a dropped connection resumes instead of restarting.
+    if let Ok(base) = app.path().app_data_dir() {
+        client.set_blob_cache(base.join("blobcache").join(HEXLOWER.encode(&vault_id)));
+    }
     crate::state::spawn_sync_agent(app, state, client, vault_id);
     // Remember the config so an app pause/resume can restart the agent.
     *state.active_sync.lock() = Some(config.clone());

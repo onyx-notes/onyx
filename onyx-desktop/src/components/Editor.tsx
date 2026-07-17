@@ -2,6 +2,7 @@
 // wikilink autocomplete, and autosave. Ctrl+E toggles source mode via a
 // compartment — instant, no remount.
 
+import { indentLess, indentMore, redo, undo } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -30,6 +31,21 @@ export interface EditorProps {
   scrollTarget: { offset: number; epoch: number } | null;
   /** Text a plugin asked to insert at the cursor. */
   insert: { text: string; epoch: number } | null;
+  /** Mobile shell: enables touch keyboard attributes. */
+  mobile?: boolean;
+  /** Receives imperative editing controls (mobile formatting toolbar). */
+  onReady?: (controls: EditorControls) => void;
+}
+
+/** Imperative surface for toolbar-style UI outside the editor DOM. */
+export interface EditorControls {
+  wrapSelection(prefix: string, suffix: string): void;
+  prefixLines(prefix: string): void;
+  insertText(text: string): void;
+  undo(): void;
+  redo(): void;
+  indent(delta: 1 | -1): void;
+  focus(): void;
 }
 
 export default function Editor(props: EditorProps) {
@@ -83,12 +99,78 @@ export default function Editor(props: EditorProps) {
           }, AUTOSAVE_MS);
         }),
         EditorView.theme({}, { dark: true }),
+        // Touch keyboards want sentence-casing and autocorrect; desktop
+        // keeps them off (spellcheck squiggles are a setting, not a default).
+        props.mobile
+          ? EditorView.contentAttributes.of({
+              autocapitalize: "sentences",
+              autocorrect: "on",
+              spellcheck: "true",
+            })
+          : [],
       ],
     });
   };
 
+  /** Toolbar-facing imperative controls (mobile formatting bar). */
+  const makeControls = (editor: EditorView): EditorControls => ({
+    wrapSelection(prefix, suffix) {
+      const { from, to } = editor.state.selection.main;
+      const selected = editor.state.sliceDoc(from, to);
+      editor.dispatch({
+        changes: { from, to, insert: `${prefix}${selected}${suffix}` },
+        selection: selected.length
+          ? { anchor: from, head: to + prefix.length + suffix.length }
+          : { anchor: from + prefix.length },
+      });
+      editor.focus();
+    },
+    prefixLines(prefix) {
+      const range = editor.state.selection.main;
+      const firstLine = editor.state.doc.lineAt(range.from).number;
+      const lastLine = editor.state.doc.lineAt(range.to).number;
+      const lines = [];
+      for (let line = firstLine; line <= lastLine; line += 1) {
+        lines.push(editor.state.doc.line(line));
+      }
+      // Toggle: strip the prefix when every selected line already has it.
+      const allPrefixed = lines.every((line) => line.text.startsWith(prefix));
+      const changes = lines.map((line) =>
+        allPrefixed
+          ? { from: line.from, to: line.from + prefix.length, insert: "" }
+          : { from: line.from, insert: prefix },
+      );
+      editor.dispatch({ changes });
+      editor.focus();
+    },
+    insertText(text) {
+      const at = editor.state.selection.main.head;
+      editor.dispatch({
+        changes: { from: at, insert: text },
+        selection: { anchor: at + text.length },
+      });
+      editor.focus();
+    },
+    undo() {
+      undo(editor);
+      editor.focus();
+    },
+    redo() {
+      redo(editor);
+      editor.focus();
+    },
+    indent(delta) {
+      (delta > 0 ? indentMore : indentLess)(editor);
+      editor.focus();
+    },
+    focus() {
+      editor.focus();
+    },
+  });
+
   onMount(() => {
     view = new EditorView({ state: buildState(props.content), parent: host });
+    props.onReady?.(makeControls(view));
     view.focus();
   });
 

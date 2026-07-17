@@ -137,7 +137,12 @@ impl SyncState {
 /// push stay dirty).
 pub struct PendingPush {
     pub doc_id: [u8; 16],
+    /// Idempotency key derived from the plaintext update, so a resend after
+    /// a lost ack dedupes server-side (see `onyx_proto::derive_op_id`).
+    pub op_id: [u8; 16],
     pub ciphertext: Vec<u8>,
+    /// A full-state checkpoint (lets the server prune this doc's backlog).
+    pub checkpoint: bool,
     version: Vec<u8>,
 }
 
@@ -517,7 +522,9 @@ impl Engine {
                 if let Some((current, update)) = exported {
                     pushes.push(PendingPush {
                         doc_id,
+                        op_id: onyx_proto::derive_op_id(&doc_id, &update),
                         ciphertext: onyx_crypto::encrypt(&sync.key, &update),
+                        checkpoint: false,
                         version: current,
                     });
                 }
@@ -541,12 +548,55 @@ impl Engine {
                 let update = doc.export_from(&pushed)?;
                 pushes.push(PendingPush {
                     doc_id,
+                    op_id: onyx_proto::derive_op_id(&doc_id, &update),
                     ciphertext: onyx_crypto::encrypt(&sync.key, &update),
+                    checkpoint: false,
                     version: current,
                 });
             }
         }
         Ok(pushes)
+    }
+
+    /// Build full-state checkpoints for the given docs — the server asks for
+    /// these (via pull hints) when a doc's op history has grown long, then
+    /// prunes the backlog once a checkpoint lands. A checkpoint exports the
+    /// *entire* doc, so merging it reseeds any peer whose early ops were
+    /// pruned. Docs we don't hold are silently skipped.
+    pub fn sync_collect_checkpoints(
+        &mut self,
+        doc_ids: &[[u8; 16]],
+    ) -> Result<Vec<PendingPush>, EngineError> {
+        use std::collections::hash_map::Entry;
+
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let mut checkpoints = Vec::new();
+        for &doc_id in doc_ids {
+            // The manifest lives in its own slot, never the doc cache.
+            let (version, full) = if doc_id == onyx_sync::MANIFEST_DOC_ID {
+                let manifest = sync.ensure_manifest()?;
+                (manifest.version(), manifest.export_from(&[])?)
+            } else {
+                let doc = match sync.docs.entry(doc_id) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                            continue; // not a doc we hold — ignore the hint
+                        };
+                        entry.insert(doc)
+                    }
+                };
+                (doc.version(), doc.export_from(&[])?)
+            };
+            checkpoints.push(PendingPush {
+                doc_id,
+                op_id: onyx_proto::derive_op_id(&doc_id, &full),
+                ciphertext: onyx_crypto::encrypt(&sync.key, &full),
+                checkpoint: true,
+                version,
+            });
+        }
+        Ok(checkpoints)
     }
 
     /// Record a successful push: only the exported versions are marked, so

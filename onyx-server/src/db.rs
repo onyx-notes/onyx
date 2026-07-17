@@ -51,23 +51,44 @@ CREATE TABLE IF NOT EXISTS shares (
     created_at INTEGER NOT NULL
 ) STRICT;
 
+-- Blobs are stored in chunks so a large attachment transfers (and resumes)
+-- one bounded piece at a time. `blobs` is the manifest — `complete` flips to
+-- 1 only after every chunk is present and the reassembled ciphertext hashes
+-- to `hash`. Incomplete blobs are never served.
 CREATE TABLE IF NOT EXISTS blobs (
     vault_id   BLOB NOT NULL,
     hash       TEXT NOT NULL,
-    data       BLOB NOT NULL,
+    total      INTEGER NOT NULL,
+    size       INTEGER NOT NULL,
+    complete   INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (vault_id, hash)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS blob_chunks (
+    vault_id BLOB NOT NULL,
+    hash     TEXT NOT NULL,
+    idx      INTEGER NOT NULL,
+    data     BLOB NOT NULL,
+    PRIMARY KEY (vault_id, hash, idx)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS ops (
     vault_id   BLOB NOT NULL,
     seq        INTEGER NOT NULL,
     doc_id     BLOB NOT NULL,
+    op_id      BLOB NOT NULL,
     device_id  BLOB NOT NULL,
     ciphertext BLOB NOT NULL,
+    checkpoint INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (vault_id, seq)
 ) STRICT;
+
+-- Idempotency: a retried push carries the same op_id and is dropped.
+CREATE UNIQUE INDEX IF NOT EXISTS ops_op_id ON ops(vault_id, op_id);
+-- Fast per-doc counting (checkpoint hints) and pruning.
+CREATE INDEX IF NOT EXISTS ops_vault_doc ON ops(vault_id, doc_id);
 ";
 
 /// Challenge validity window.
@@ -79,7 +100,14 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("reassembled blob does not match its content hash")]
+    HashMismatch,
 }
+
+/// A doc's op count crossing this threshold makes the server ask a client to
+/// checkpoint it (see `docs_over_threshold`). Kept well above the number of
+/// ops a normal editing session produces so checkpoints are rare.
+pub const CHECKPOINT_THRESHOLD: usize = 256;
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -217,6 +245,11 @@ impl Db {
 
     /// Append ops atomically, assigning consecutive sequence numbers.
     /// Returns the vault head after the append.
+    ///
+    /// Idempotent per `op_id`: an op the vault already holds (a retry after
+    /// a flaky link dropped the ack) is skipped, not stored again. A
+    /// checkpoint op supersedes its doc's earlier ops — they're pruned in
+    /// the same transaction, bounding oplog growth.
     pub fn append_ops(
         &self,
         vault_id: [u8; 16],
@@ -233,15 +266,68 @@ impl Db {
             )
             .unwrap_or(0);
         for op in ops {
+            // Already stored under this op_id? A duplicate delivery — skip
+            // without burning a seq, so resends can't inflate the log.
+            let seen: Option<i64> = tx
+                .query_row(
+                    "SELECT seq FROM ops WHERE vault_id = ?1 AND op_id = ?2",
+                    params![vault_id, op.op_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if seen.is_some() {
+                continue;
+            }
             head += 1;
             tx.execute(
-                "INSERT INTO ops (vault_id, seq, doc_id, device_id, ciphertext, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![vault_id, head, op.doc_id, device_id, op.ciphertext, now()],
+                "INSERT INTO ops
+                    (vault_id, seq, doc_id, op_id, device_id, ciphertext, checkpoint, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    vault_id,
+                    head,
+                    op.doc_id,
+                    op.op_id,
+                    device_id,
+                    op.ciphertext,
+                    op.checkpoint as i64,
+                    now()
+                ],
             )?;
+            if op.checkpoint {
+                // The checkpoint's full state subsumes every earlier op for
+                // this doc; drop them. Peers that hadn't seen those ops get
+                // the checkpoint instead and converge (CRDT reseed).
+                tx.execute(
+                    "DELETE FROM ops WHERE vault_id = ?1 AND doc_id = ?2 AND seq < ?3",
+                    params![vault_id, op.doc_id, head],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(head as u64)
+    }
+
+    /// Docs whose stored op count has reached `threshold` — the server hands
+    /// these back as checkpoint hints so a client compacts them. Cheap while
+    /// checkpointing keeps per-doc counts small (the steady state).
+    pub fn docs_over_threshold(
+        &self,
+        vault_id: [u8; 16],
+        threshold: usize,
+    ) -> Result<Vec<[u8; 16]>, DbError> {
+        let conn = self.conn.lock();
+        let mut statement = conn.prepare(
+            "SELECT doc_id FROM ops WHERE vault_id = ?1
+             GROUP BY doc_id HAVING COUNT(*) >= ?2",
+        )?;
+        let ids = statement
+            .query_map(params![vault_id, threshold as i64], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .filter_map(|result| result.ok().and_then(|bytes| bytes.try_into().ok()))
+            .collect();
+        Ok(ids)
     }
 
     /// Enrollment relay: opaque request/response blobs under a short-lived
@@ -332,30 +418,248 @@ impl Db {
         Ok(deleted == 1)
     }
 
+    /// Single-shot store for a small (≤ one chunk) blob whose hash the caller
+    /// has already verified. Stored as a one-chunk complete blob; any stale
+    /// partial upload for the same hash is cleared first.
     pub fn put_blob(&self, vault_id: [u8; 16], hash: &str, data: &[u8]) -> Result<(), DbError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2",
+            params![vault_id, hash],
+        )?;
+        tx.execute(
+            "INSERT INTO blobs (vault_id, hash, total, size, complete, created_at)
+             VALUES (?1, ?2, 1, ?3, 1, ?4)
+             ON CONFLICT(vault_id, hash) DO UPDATE SET total = 1, size = ?3, complete = 1",
+            params![vault_id, hash, data.len() as i64, now()],
+        )?;
+        tx.execute(
+            "INSERT INTO blob_chunks (vault_id, hash, idx, data) VALUES (?1, ?2, 0, ?3)",
+            params![vault_id, hash, data],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record the expected shape of a chunked upload (idempotent). Leaves an
+    /// already-complete blob untouched.
+    pub fn blob_begin(
+        &self,
+        vault_id: [u8; 16],
+        hash: &str,
+        total: u32,
+        size: u64,
+    ) -> Result<(), DbError> {
         self.conn.lock().execute(
-            "INSERT INTO blobs (vault_id, hash, data, created_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT DO NOTHING",
-            params![vault_id, hash, data, now()],
+            "INSERT INTO blobs (vault_id, hash, total, size, complete, created_at)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5)
+             ON CONFLICT(vault_id, hash) DO NOTHING",
+            params![vault_id, hash, total as i64, size as i64, now()],
         )?;
         Ok(())
     }
 
+    /// Store one chunk (idempotent — re-uploading a chunk is a no-op).
+    pub fn blob_put_chunk(
+        &self,
+        vault_id: [u8; 16],
+        hash: &str,
+        idx: u32,
+        data: &[u8],
+    ) -> Result<(), DbError> {
+        self.conn.lock().execute(
+            "INSERT INTO blob_chunks (vault_id, hash, idx, data) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(vault_id, hash, idx) DO NOTHING",
+            params![vault_id, hash, idx as i64, data],
+        )?;
+        Ok(())
+    }
+
+    /// Which chunks are present (for resume), plus the expected total and
+    /// completion flag. `None` if the upload was never begun.
+    pub fn blob_status(
+        &self,
+        vault_id: [u8; 16],
+        hash: &str,
+    ) -> Result<Option<onyx_proto::BlobStatus>, DbError> {
+        let conn = self.conn.lock();
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT total, complete FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((total, complete)) = row else {
+            return Ok(None);
+        };
+        let mut statement = conn.prepare(
+            "SELECT idx FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2 ORDER BY idx",
+        )?;
+        let present = statement
+            .query_map(params![vault_id, hash], |row| row.get::<_, i64>(0))?
+            .filter_map(|result| result.ok().map(|idx| idx as u32))
+            .collect();
+        Ok(Some(onyx_proto::BlobStatus {
+            present,
+            total: total as u32,
+            complete: complete != 0,
+        }))
+    }
+
+    /// If every chunk has arrived, reassemble (streaming — one chunk in RAM
+    /// at a time), verify the content hash, and mark complete. On mismatch
+    /// the partial upload is discarded so the client can retry cleanly.
+    /// Returns whether the blob is now complete.
+    pub fn blob_try_complete(&self, vault_id: [u8; 16], hash: &str) -> Result<bool, DbError> {
+        let conn = self.conn.lock();
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT total, complete FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((total, complete)) = row else {
+            return Ok(false);
+        };
+        if complete != 0 {
+            return Ok(true);
+        }
+        let present: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2",
+            params![vault_id, hash],
+            |row| row.get(0),
+        )?;
+        if present != total {
+            return Ok(false);
+        }
+        let mut hasher = blake3::Hasher::new();
+        {
+            let mut statement = conn.prepare(
+                "SELECT data FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2 ORDER BY idx",
+            )?;
+            let mut rows = statement.query(params![vault_id, hash])?;
+            while let Some(row) = rows.next()? {
+                let data: Vec<u8> = row.get(0)?;
+                hasher.update(&data);
+            }
+        }
+        if hasher.finalize().to_hex().as_str() != hash {
+            conn.execute(
+                "DELETE FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+            )?;
+            conn.execute(
+                "DELETE FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+            )?;
+            return Err(DbError::HashMismatch);
+        }
+        conn.execute(
+            "UPDATE blobs SET complete = 1 WHERE vault_id = ?1 AND hash = ?2",
+            params![vault_id, hash],
+        )?;
+        Ok(true)
+    }
+
+    /// The full ciphertext of a complete blob (assembled from its chunks).
+    /// `None` unless complete. For large blobs prefer `blob_read_range`.
     pub fn get_blob(&self, vault_id: [u8; 16], hash: &str) -> Result<Option<Vec<u8>>, DbError> {
+        let conn = self.conn.lock();
+        let complete: Option<i64> = conn
+            .query_row(
+                "SELECT complete FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if complete != Some(1) {
+            return Ok(None);
+        }
+        let mut statement = conn.prepare(
+            "SELECT data FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2 ORDER BY idx",
+        )?;
+        let mut rows = statement.query(params![vault_id, hash])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let data: Vec<u8> = row.get(0)?;
+            out.extend_from_slice(&data);
+        }
+        Ok(Some(out))
+    }
+
+    /// The total size of a complete blob, or `None`.
+    pub fn blob_size(&self, vault_id: [u8; 16], hash: &str) -> Result<Option<u64>, DbError> {
         Ok(self
             .conn
             .lock()
             .query_row(
-                "SELECT data FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                "SELECT size FROM blobs WHERE vault_id = ?1 AND hash = ?2 AND complete = 1",
                 params![vault_id, hash],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .optional()?)
+            .optional()?
+            .map(|size| size as u64))
+    }
+
+    /// Read `[start, start+len)` of a complete blob, touching only the
+    /// overlapping chunks (bounded RAM — this is the download-resume lane).
+    /// `None` unless complete; an empty vec if `start` is past the end.
+    pub fn blob_read_range(
+        &self,
+        vault_id: [u8; 16],
+        hash: &str,
+        start: u64,
+        len: u64,
+    ) -> Result<Option<Vec<u8>>, DbError> {
+        let conn = self.conn.lock();
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT size, complete FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+                params![vault_id, hash],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((size, complete)) = row else {
+            return Ok(None);
+        };
+        if complete == 0 {
+            return Ok(None);
+        }
+        let size = size as u64;
+        if start >= size {
+            return Ok(Some(Vec::new()));
+        }
+        let end = start.saturating_add(len).min(size); // exclusive
+        let mut statement = conn.prepare(
+            "SELECT data FROM blob_chunks WHERE vault_id = ?1 AND hash = ?2 ORDER BY idx",
+        )?;
+        let mut rows = statement.query(params![vault_id, hash])?;
+        let mut out = Vec::with_capacity((end - start) as usize);
+        let mut offset: u64 = 0;
+        while let Some(row) = rows.next()? {
+            let data: Vec<u8> = row.get(0)?;
+            let chunk_start = offset;
+            let chunk_end = offset + data.len() as u64;
+            offset = chunk_end;
+            if chunk_end <= start {
+                continue;
+            }
+            if chunk_start >= end {
+                break;
+            }
+            let from = start.saturating_sub(chunk_start) as usize;
+            let to = (end.min(chunk_end) - chunk_start) as usize;
+            out.extend_from_slice(&data[from..to]);
+        }
+        Ok(Some(out))
     }
 
     pub fn has_blob(&self, vault_id: [u8; 16], hash: &str) -> Result<bool, DbError> {
         let count: i64 = self.conn.lock().query_row(
-            "SELECT COUNT(*) FROM blobs WHERE vault_id = ?1 AND hash = ?2",
+            "SELECT COUNT(*) FROM blobs WHERE vault_id = ?1 AND hash = ?2 AND complete = 1",
             params![vault_id, hash],
             |row| row.get(0),
         )?;

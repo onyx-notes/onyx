@@ -144,5 +144,16 @@
   "mobile.vaultEncryptPrompt": "¿Cifrar este baúl con una frase de contraseña?",
   "mobile.switchVault": "Cambiar",
   "mobile.encrypted": "cifrado",
-  "mobile.plain": "sin cifrar"
+  "mobile.plain": "sin cifrar",
+  "mobile.toolbar.bold": "Negrita",
+  "mobile.toolbar.italic": "Cursiva",
+  "mobile.toolbar.heading": "Encabezado",
+  "mobile.toolbar.list": "Lista",
+  "mobile.toolbar.task": "Tarea",
+  "mobile.toolbar.wikilink": "Wikienlace",
+  "mobile.toolbar.code": "Código en línea",
+  "mobile.toolbar.indent": "Aumentar sangría",
+  "mobile.toolbar.outdent": "Reducir sangría",
+  "mobile.toolbar.undo": "Deshacer",
+  "mobile.toolbar.redo": "Rehacer"
 }

@@ -6,11 +6,12 @@ import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "s
 
 import { type ManagedVault, type NoteInfo, type Settings, api } from "../api";
 import ChatPanel from "../components/ChatPanel";
-import Editor from "../components/Editor";
+import Editor, { type EditorControls } from "../components/Editor";
 import QuickSwitcher from "../components/QuickSwitcher";
 import RightPanel from "../components/RightPanel";
 import SettingsModal from "../components/SettingsModal";
 import { t } from "../i18n";
+import MobileToolbar from "./MobileToolbar";
 
 /** Push settings into the DOM (same contract as the desktop shell). */
 function applySettings(settings: Settings) {
@@ -54,6 +55,8 @@ export default function MobileApp() {
   const [settings, setSettings] = createSignal<Settings | null>(null);
   const [syncState, setSyncState] = createSignal<string | null>(null);
   const [status, setStatus] = createSignal("");
+  const [editorControls, setEditorControls] = createSignal<EditorControls | null>(null);
+  const [keyboardOpen, setKeyboardOpen] = createSignal(false);
 
   const activePath = () => navStack().at(-1) ?? null;
   const report = (error: unknown) =>
@@ -245,11 +248,15 @@ export default function MobileApp() {
     // bottom bar and editor stay visible above the keyboard.
     const viewport = window.visualViewport;
     if (viewport) {
-      const applyHeight = () =>
+      const applyHeight = () => {
         document.documentElement.style.setProperty(
           "--onyx-viewport-height",
           `${viewport.height}px`,
         );
+        // A large height loss means the on-screen keyboard is up — swap the
+        // bottom bar for the formatting toolbar.
+        setKeyboardOpen(window.innerHeight - viewport.height > 120);
+      };
       applyHeight();
       viewport.addEventListener("resize", applyHeight);
       onCleanup(() => viewport.removeEventListener("resize", applyHeight));
@@ -305,12 +312,18 @@ export default function MobileApp() {
                 onFollowLink={(target) => void followLink(target)}
                 scrollTarget={null}
                 insert={null}
+                mobile
+                onReady={setEditorControls}
               />
             )}
           </Show>
         </main>
 
-        <nav class="mobile-bottombar">
+        <Show when={keyboardOpen() && activePath() !== null ? editorControls() : null}>
+          {(controls) => <MobileToolbar controls={controls()} />}
+        </Show>
+
+        <nav class="mobile-bottombar" classList={{ hidden: keyboardOpen() }}>
           <button class="mobile-icon" onClick={() => setQuickOpen(true)}>
             ⌕
           </button>
