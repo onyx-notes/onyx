@@ -296,29 +296,39 @@ mod tests {
         assert!(content.contains(r#"title: "Title: with \"quotes\"""#));
     }
 
+    fn try_post(port: u16, token: &str, body: &str) -> std::io::Result<String> {
+        use std::io::Write;
+        let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        write!(
+            stream,
+            "POST /clip HTTP/1.1\r\nHost: localhost\r\nX-Onyx-Token: {token}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        let mut response = String::new();
+        std::io::Read::read_to_string(&mut stream, &mut response)?;
+        Ok(response)
+    }
+
     #[test]
     fn server_writes_a_note_and_rejects_bad_token() {
-        use std::io::Write;
-
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(dir.path()).unwrap();
         let shared = Arc::new(Mutex::new(Some(engine)));
         let clipper = spawn_on(0, "secret-token".into(), Arc::clone(&shared)).unwrap();
         let port = clipper.port();
-        std::thread::sleep(std::time::Duration::from_millis(100));
 
+        // Real-socket round trip; retry transient errors (parallel test
+        // runs saturate the scheduler, and TCP can RST under load).
         let post = |token: &str, body: &str| -> String {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(
-                stream,
-                "POST /clip HTTP/1.1\r\nHost: localhost\r\nX-Onyx-Token: {token}\r\n\
-                 Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-            let mut response = String::new();
-            std::io::Read::read_to_string(&mut stream, &mut response).unwrap();
-            response
+            for attempt in 0..20 {
+                match try_post(port, token, body) {
+                    Ok(response) if response.contains("HTTP/1.1") => return response,
+                    _ => std::thread::sleep(std::time::Duration::from_millis(25 * (attempt + 1))),
+                }
+            }
+            panic!("clipper did not respond after retries");
         };
 
         let body = r#"{"title":"Clipped","url":"https://a.b","markdown":"hello"}"#;
