@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use onyx_core::{NotePath, VaultFs};
+use onyx_core::NotePath;
 use onyx_crypto::VaultKey;
 use serde::{Deserialize, Serialize};
 
