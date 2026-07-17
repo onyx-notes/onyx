@@ -164,5 +164,8 @@
   "mobile.enrollDone": "Sync joined — your notes are on their way",
   "mobile.cameraDenied": "Camera permission denied",
   "mobile.captured": "Captured",
-  "mobile.linkNeedsVault": "Open a vault to finish this action"
+  "mobile.linkNeedsVault": "Open a vault to finish this action",
+  "mobile.readingView": "Reading view",
+  "mobile.editView": "Edit",
+  "mobile.graph": "Graph"
 }

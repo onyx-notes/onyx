@@ -14,7 +14,9 @@ import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "s
 import { type ManagedVault, type NoteInfo, type Settings, api } from "../api";
 import ChatPanel from "../components/ChatPanel";
 import Editor, { type EditorControls } from "../components/Editor";
+import GraphView from "../components/GraphView";
 import QuickSwitcher from "../components/QuickSwitcher";
+import ReadingView from "../components/ReadingView";
 import RightPanel from "../components/RightPanel";
 import SettingsModal from "../components/SettingsModal";
 import { t } from "../i18n";
@@ -64,6 +66,8 @@ export default function MobileApp() {
   const [status, setStatus] = createSignal("");
   const [editorControls, setEditorControls] = createSignal<EditorControls | null>(null);
   const [keyboardOpen, setKeyboardOpen] = createSignal(false);
+  const [readingMode, setReadingMode] = createSignal(false);
+  const [graphOpen, setGraphOpen] = createSignal(false);
 
   const activePath = () => navStack().at(-1) ?? null;
   const report = (error: unknown) =>
@@ -97,8 +101,10 @@ export default function MobileApp() {
   };
 
   const goBack = () => {
+    if (graphOpen()) return setGraphOpen(false);
     if (sheetOpen()) return setSheetOpen(false);
     if (drawerOpen()) return setDrawerOpen(false);
+    if (readingMode()) return setReadingMode(false);
     setNavStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
   };
 
@@ -439,17 +445,28 @@ export default function MobileApp() {
             fallback={<div class="empty-state">{t("editor.placeholder")}</div>}
           >
             {(path) => (
-              <Editor
-                path={path()}
-                content={content()}
-                reloadSignal={reloadSignal()}
-                onChange={(body) => void saveNote(body)}
-                onFollowLink={(target) => void followLink(target)}
-                scrollTarget={null}
-                insert={null}
-                mobile
-                onReady={setEditorControls}
-              />
+              <Show
+                when={!readingMode()}
+                fallback={
+                  <ReadingView
+                    path={path()}
+                    reloadSignal={reloadSignal()}
+                    onFollowLink={(target) => void followLink(target)}
+                  />
+                }
+              >
+                <Editor
+                  path={path()}
+                  content={content()}
+                  reloadSignal={reloadSignal()}
+                  onChange={(body) => void saveNote(body)}
+                  onFollowLink={(target) => void followLink(target)}
+                  scrollTarget={null}
+                  insert={null}
+                  mobile
+                  onReady={setEditorControls}
+                />
+              </Show>
             )}
           </Show>
         </main>
@@ -504,6 +521,24 @@ export default function MobileApp() {
           <div class="mobile-scrim" onClick={() => setSheetOpen(false)}>
             <div class="mobile-sheet" onClick={(event) => event.stopPropagation()}>
               <div class="mobile-sheet-grip" />
+              <div class="mobile-sheet-actions">
+                <button
+                  onClick={() => {
+                    setReadingMode((mode) => !mode);
+                    setSheetOpen(false);
+                  }}
+                >
+                  {readingMode() ? t("mobile.editView") : t("mobile.readingView")}
+                </button>
+                <button
+                  onClick={() => {
+                    setGraphOpen(true);
+                    setSheetOpen(false);
+                  }}
+                >
+                  {t("mobile.graph")}
+                </button>
+              </div>
               <RightPanel
                 path={activePath()}
                 epoch={vaultEpoch()}
@@ -515,6 +550,16 @@ export default function MobileApp() {
               />
             </div>
           </div>
+        </Show>
+
+        <Show when={graphOpen()}>
+          <GraphView
+            onOpen={(path) => {
+              setGraphOpen(false);
+              openNote(path);
+            }}
+            onClose={() => setGraphOpen(false)}
+          />
         </Show>
 
         <Show when={quickOpen()}>

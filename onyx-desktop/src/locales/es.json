@@ -164,5 +164,8 @@
   "mobile.enrollDone": "Sincronización unida — tus notas están en camino",
   "mobile.cameraDenied": "Permiso de cámara denegado",
   "mobile.captured": "Capturado",
-  "mobile.linkNeedsVault": "Abre un baúl para terminar esta acción"
+  "mobile.linkNeedsVault": "Abre un baúl para terminar esta acción",
+  "mobile.readingView": "Vista de lectura",
+  "mobile.editView": "Editar",
+  "mobile.graph": "Grafo"
 }

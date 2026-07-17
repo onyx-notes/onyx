@@ -1109,6 +1109,24 @@ body.mobile .cm-onyx-wikilink.is-preview {
   align-items: center;
 }
 
+.mobile-sheet-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 12px 8px;
+}
+
+.mobile-sheet-actions button {
+  flex: 1;
+  min-height: 40px;
+  border: 1px solid var(--onyx-border);
+  border-radius: var(--onyx-radius);
+  color: var(--onyx-text-secondary);
+}
+
+.mobile-sheet-actions button:active {
+  background: var(--onyx-bg-active);
+}
+
 .mobile-sheet {
   margin-top: auto;
   width: 100%;
