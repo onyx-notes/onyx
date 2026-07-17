@@ -23,6 +23,13 @@ impl VaultKey {
         Self(bytes)
     }
 
+    /// Export the raw key. Only for handing the key to another sealed
+    /// store (enrollment payloads, the mobile biometric keystore) — the
+    /// caller owns zeroizing the copy.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+
     /// Derive a 32-byte subkey for a labeled purpose. Uses BLAKE3's
     /// derive-key mode: `context` must be a hardcoded, globally unique
     /// string per RFC-style domain separation.

@@ -37,9 +37,11 @@ pub enum SyncSetupError {
 }
 
 /// Map a transport error to `Offline` when it's a connectivity failure
-/// rather than a protocol/server problem.
+/// rather than a protocol/server problem. A `.send()` that never produced a
+/// response — connection refused, timeout, or a link that dropped mid-flight
+/// (a reset surfaces as a request error) — is roaming, not an error.
 fn transport_error(error: reqwest::Error) -> SyncSetupError {
-    if error.is_connect() || error.is_timeout() {
+    if error.is_connect() || error.is_timeout() || error.is_request() {
         SyncSetupError::Offline
     } else {
         SyncSetupError::Http(error.to_string())

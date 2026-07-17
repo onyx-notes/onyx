@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile-only capabilities: QR enrollment scanning, onyx:// deep links (capture + share target), touch haptics. The onyx-secrets plugin exposes no webview commands by design.",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": [
+    "barcode-scanner:allow-scan",
+    "barcode-scanner:allow-cancel",
+    "barcode-scanner:allow-check-permissions",
+    "barcode-scanner:allow-request-permissions",
+    "deep-link:default",
+    "haptics:default"
+  ]
+}

@@ -155,5 +155,14 @@
   "mobile.toolbar.indent": "Indent",
   "mobile.toolbar.outdent": "Outdent",
   "mobile.toolbar.undo": "Undo",
-  "mobile.toolbar.redo": "Redo"
+  "mobile.toolbar.redo": "Redo",
+  "mobile.bioEnrollPrompt": "Unlock this vault with your fingerprint or face next time?",
+  "mobile.scanQr": "Scan QR to join sync",
+  "mobile.joinConfirm": "Join sync at {server}?",
+  "mobile.enrollCode": "Pairing code: {code} — enter it on your other device",
+  "mobile.sasConfirm": "Do both devices show {sas}?",
+  "mobile.enrollDone": "Sync joined — your notes are on their way",
+  "mobile.cameraDenied": "Camera permission denied",
+  "mobile.captured": "Captured",
+  "mobile.linkNeedsVault": "Open a vault to finish this action"
 }

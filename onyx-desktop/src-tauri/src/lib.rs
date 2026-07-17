@@ -34,13 +34,19 @@ pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    #[cfg(mobile)]
+    let builder = builder
+        .plugin(tauri_plugin_onyx_secrets::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_haptics::init());
     builder
         .manage(state::AppState::default())
         .setup(|app| {
             #[cfg(desktop)]
             crate::capture::register_quick_capture(app.handle())?;
             #[cfg(mobile)]
-            let _ = &app;
+            crate::secrets::init(app.handle().clone());
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("onyx", protocol::handle)
@@ -108,6 +114,10 @@ pub fn run() {
             commands::platform_info,
             commands::app_pause,
             commands::app_resume,
+            commands::biometric_status,
+            commands::enable_biometric_unlock,
+            commands::open_vault_biometric,
+            commands::disable_biometric_unlock,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Onyx")
@@ -118,12 +128,9 @@ pub fn run() {
             #[cfg(any(target_os = "android", target_os = "ios"))]
             {
                 use tauri::Manager;
-                match event {
-                    tauri::RunEvent::Resumed => {
-                        let state = app_handle.state::<state::AppState>();
-                        commands::resume_sync_if_needed(app_handle, &state);
-                    }
-                    _ => {}
+                if let tauri::RunEvent::Resumed = event {
+                    let state = app_handle.state::<state::AppState>();
+                    commands::resume_sync_if_needed(app_handle, &state);
                 }
             }
             #[cfg(not(any(target_os = "android", target_os = "ios")))]

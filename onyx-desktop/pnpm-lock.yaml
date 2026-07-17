@@ -29,6 +29,15 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.6.0
         version: 2.11.1
+      '@tauri-apps/plugin-barcode-scanner':
+        specifier: ^2.4.5
+        version: 2.4.5
+      '@tauri-apps/plugin-deep-link':
+        specifier: ^2.4.9
+        version: 2.4.9
+      '@tauri-apps/plugin-haptics':
+        specifier: ^2.3.2
+        version: 2.3.2
       codemirror:
         specifier: ^6.0.1
         version: 6.0.2
@@ -613,6 +622,15 @@ packages:
     resolution: {integrity: sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ==}
     engines: {node: '>= 10'}
     hasBin: true
+
+  '@tauri-apps/plugin-barcode-scanner@2.4.5':
+    resolution: {integrity: sha512-sIPRYEfxww8/y8skZ2LcAp/h5bwvlHkQiq+3w6QEl+2BHs13xnpn7hP+pv4fkBs8DyDfpUbOBIYS5YBwP7x1QQ==}
+
+  '@tauri-apps/plugin-deep-link@2.4.9':
+    resolution: {integrity: sha512-u0SKOUHnJ1wqeqXsDFq2+kASCBj9xxbG0g9XZWPy9SOmU4wXtp6b/wiYpm6oH6/5fBTQsLqnLhIvqLBRpgHJlA==}
+
+  '@tauri-apps/plugin-haptics@2.3.2':
+    resolution: {integrity: sha512-TqvBR5JoPodDQWPXsNymmyqp37dOpunZOdVVbx5xOAxki7rVwiCMvoEPdtJQNIrU+dQDfkQYZ2oDBVOu4hf+ig==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -1894,6 +1912,18 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.11.4
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
+
+  '@tauri-apps/plugin-barcode-scanner@2.4.5':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
+
+  '@tauri-apps/plugin-deep-link@2.4.9':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
+
+  '@tauri-apps/plugin-haptics@2.3.2':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   '@types/babel__core@7.20.5':
     dependencies:

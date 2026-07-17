@@ -233,6 +233,14 @@ export const api = {
     invoke<VaultInfo>("create_managed_vault", { name, passphrase }),
   appPause: () => invoke<void>("app_pause"),
   appResume: () => invoke<void>("app_resume"),
+  biometricStatus: (path: string) =>
+    invoke<{ available: boolean; enrolled: boolean }>("biometric_status", { path }),
+  enableBiometricUnlock: (path: string) =>
+    invoke<void>("enable_biometric_unlock", { path }),
+  openVaultBiometric: (path: string) =>
+    invoke<VaultInfo>("open_vault_biometric", { path }),
+  disableBiometricUnlock: (path: string) =>
+    invoke<void>("disable_biometric_unlock", { path }),
   enrollStart: (serverUrl: string) =>
     invoke<{ code: string }>("enroll_start", { serverUrl }),
   enrollWait: () => invoke<{ sas: string }>("enroll_wait"),

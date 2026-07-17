@@ -240,6 +240,266 @@ async fn two_devices_sync_an_encrypted_note() {
     );
 }
 
+/// Register + join a vault, returning the authenticated device.
+async fn member(app: &Router, vault_hex: &str) -> Device {
+    let device = enroll(app).await;
+    json_request(
+        app,
+        "POST",
+        "/v1/vaults",
+        Some(&device.token),
+        serde_json::json!({ "vaultId": vault_hex }),
+    )
+    .await;
+    device
+}
+
+#[tokio::test]
+async fn chunked_blob_uploads_resume_and_serve_ranges() {
+    let state = onyx_server::state_in_memory().unwrap();
+    let app = onyx_server::app(state);
+    let vault_hex = HEXLOWER.encode(&[21u8; 16]);
+    let device = member(&app, &vault_hex).await;
+
+    // Three unequal chunks; the hash addresses the whole ciphertext.
+    let chunks = [vec![0xA1; 120], vec![0xB2; 80], vec![0xC3; 40]];
+    let full: Vec<u8> = chunks.iter().flatten().copied().collect();
+    let hash = blake3::hash(&full).to_hex().to_string();
+    let size = full.len();
+    let base = format!("/v1/vaults/{vault_hex}/blobs/{hash}");
+
+    // Upload chunk 0, then SKIP chunk 1 (simulate a drop) and send chunk 2.
+    for idx in [0usize, 2] {
+        let (status, _) = request(
+            &app,
+            "PUT",
+            &format!("{base}/chunks/{idx}?total=3&size={size}"),
+            Some(&device.token),
+            chunks[idx].clone(),
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "partial chunk accepted, not complete");
+    }
+    // Not yet downloadable.
+    let (status, _) = request(&app, "GET", &base, Some(&device.token), Vec::new(), false).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Resume: the status endpoint reports the gap so a client re-sends only 1.
+    let (status, status_bytes) = request(
+        &app,
+        "GET",
+        &format!("{base}/status"),
+        Some(&device.token),
+        Vec::new(),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let blob_status: onyx_proto::BlobStatus = onyx_proto::decode(&status_bytes).unwrap();
+    assert_eq!(blob_status.present, vec![0, 2]);
+    assert!(!blob_status.complete);
+
+    // Send the missing chunk 1 → completes and hash-verifies (201).
+    let (status, _) = request(
+        &app,
+        "PUT",
+        &format!("{base}/chunks/1?total=3&size={size}"),
+        Some(&device.token),
+        chunks[1].clone(),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // HEAD reports the size for range planning.
+    let (status, _) = request(&app, "HEAD", &base, Some(&device.token), Vec::new(), false).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Ranged download reassembles the exact bytes across chunk boundaries.
+    let mut assembled = Vec::new();
+    let mut offset = 0usize;
+    while offset < size {
+        let last = (offset + 90 - 1).min(size - 1);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&base)
+                    .header("authorization", format!("Bearer {}", device.token))
+                    .header("range", format!("bytes={offset}-{last}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        let piece = response.into_body().collect().await.unwrap().to_bytes();
+        assembled.extend_from_slice(&piece);
+        offset = last + 1;
+    }
+    assert_eq!(assembled, full, "ranged download must reassemble exactly");
+
+    // An unsatisfiable range → 416.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&base)
+                .header("authorization", format!("Bearer {}", device.token))
+                .header("range", format!("bytes={}-{}", size + 10, size + 20))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+}
+
+#[tokio::test]
+async fn push_is_idempotent_over_the_wire() {
+    let state = onyx_server::state_in_memory().unwrap();
+    let app = onyx_server::app(Arc::clone(&state));
+    let vault_bytes = [22u8; 16];
+    let vault_hex = HEXLOWER.encode(&vault_bytes);
+    let device = member(&app, &vault_hex).await;
+
+    let doc = SyncDoc::from_text(1, "content").unwrap();
+    let update = doc.export_from(&[]).unwrap();
+    let op = onyx_proto::EncOp::incremental([1; 16], &update, vec![0xDE, 0xAD]);
+    let push = onyx_proto::PushOps {
+        version: onyx_proto::PROTOCOL_VERSION,
+        ops: vec![op],
+    };
+    let body = onyx_proto::encode(&push).unwrap();
+
+    // Push twice (a flaky link that dropped the first ack).
+    for _ in 0..2 {
+        let (status, ack_bytes) = request(
+            &app,
+            "POST",
+            &format!("/v1/vaults/{vault_hex}/ops"),
+            Some(&device.token),
+            body.clone(),
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let ack: onyx_proto::PushAck = onyx_proto::decode(&ack_bytes).unwrap();
+        assert_eq!(ack.head_seq, 1, "resend must not advance the head");
+    }
+    // Exactly one row was stored.
+    let (ops, head) = state.db.ops_since(vault_bytes, 0, 100).unwrap();
+    assert_eq!(head, 1);
+    assert_eq!(ops.len(), 1);
+}
+
+#[tokio::test]
+async fn checkpoint_compaction_preserves_convergence_for_a_fresh_device() {
+    let state = onyx_server::state_in_memory().unwrap();
+    let app = onyx_server::app(Arc::clone(&state));
+    let vault_bytes = [23u8; 16];
+    let vault_hex = HEXLOWER.encode(&vault_bytes);
+    let vault_key = VaultKey::from_bytes([55; 32]);
+    let doc_id = [1u8; 16];
+    let author = member(&app, &vault_hex).await;
+
+    // Author many incremental edits — enough to cross the checkpoint
+    // threshold — pushing each as its own op.
+    let doc = SyncDoc::new(1);
+    let mut since = Vec::new();
+    for i in 0..300 {
+        doc.set_text(&format!("line {i}\n")).unwrap();
+        let update = doc.export_from(&since).unwrap();
+        since = doc.version();
+        let op = onyx_proto::EncOp::incremental(doc_id, &update, onyx_crypto::encrypt(&vault_key, &update));
+        let push = onyx_proto::PushOps {
+            version: onyx_proto::PROTOCOL_VERSION,
+            ops: vec![op],
+        };
+        let (status, _) = request(
+            &app,
+            "POST",
+            &format!("/v1/vaults/{vault_hex}/ops"),
+            Some(&author.token),
+            onyx_proto::encode(&push).unwrap(),
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // A caught-up pull now carries a checkpoint hint for the heavy doc.
+    let (_, batch_bytes) = request(
+        &app,
+        "GET",
+        &format!("/v1/vaults/{vault_hex}/ops?since=0"),
+        Some(&author.token),
+        Vec::new(),
+        false,
+    )
+    .await;
+    let batch: onyx_proto::OpsBatch = onyx_proto::decode(&batch_bytes).unwrap();
+    assert!(
+        batch.checkpoint_hints.contains(&doc_id),
+        "server should ask to checkpoint the heavy doc"
+    );
+
+    // The author answers with a full-state checkpoint.
+    let full = doc.export_from(&[]).unwrap();
+    let checkpoint = onyx_proto::EncOp::checkpoint(doc_id, &full, onyx_crypto::encrypt(&vault_key, &full));
+    let push = onyx_proto::PushOps {
+        version: onyx_proto::PROTOCOL_VERSION,
+        ops: vec![checkpoint],
+    };
+    request(
+        &app,
+        "POST",
+        &format!("/v1/vaults/{vault_hex}/ops"),
+        Some(&author.token),
+        onyx_proto::encode(&push).unwrap(),
+        false,
+    )
+    .await;
+
+    // The backlog is pruned: only the checkpoint op survives for this doc,
+    // and the hint is gone.
+    let (_, batch_bytes) = request(
+        &app,
+        "GET",
+        &format!("/v1/vaults/{vault_hex}/ops?since=0"),
+        Some(&author.token),
+        Vec::new(),
+        false,
+    )
+    .await;
+    let batch: onyx_proto::OpsBatch = onyx_proto::decode(&batch_bytes).unwrap();
+    assert_eq!(batch.ops.len(), 1, "300 ops compacted to one checkpoint");
+    assert!(batch.checkpoint_hints.is_empty());
+
+    // A BRAND-NEW device (cursor 0, missed every pruned op) still converges
+    // from the checkpoint alone.
+    let newcomer = member(&app, &vault_hex).await;
+    let (_, batch_bytes) = request(
+        &app,
+        "GET",
+        &format!("/v1/vaults/{vault_hex}/ops?since=0"),
+        Some(&newcomer.token),
+        Vec::new(),
+        false,
+    )
+    .await;
+    let batch: onyx_proto::OpsBatch = onyx_proto::decode(&batch_bytes).unwrap();
+    let fresh = SyncDoc::new(2);
+    for op in &batch.ops {
+        let plaintext = onyx_crypto::decrypt(&vault_key, &op.ciphertext).unwrap();
+        fresh.import(&plaintext).unwrap();
+    }
+    assert_eq!(fresh.text(), doc.text(), "fresh device must converge post-prune");
+}
+
 #[tokio::test]
 async fn auth_is_actually_enforced() {
     let state = onyx_server::state_in_memory().unwrap();

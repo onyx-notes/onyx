@@ -155,5 +155,14 @@
   "mobile.toolbar.indent": "Aumentar sangría",
   "mobile.toolbar.outdent": "Reducir sangría",
   "mobile.toolbar.undo": "Deshacer",
-  "mobile.toolbar.redo": "Rehacer"
+  "mobile.toolbar.redo": "Rehacer",
+  "mobile.bioEnrollPrompt": "¿Desbloquear este baúl con tu huella o rostro la próxima vez?",
+  "mobile.scanQr": "Escanear QR para unirse a la sincronización",
+  "mobile.joinConfirm": "¿Unirse a la sincronización en {server}?",
+  "mobile.enrollCode": "Código de emparejamiento: {code} — introdúcelo en tu otro dispositivo",
+  "mobile.sasConfirm": "¿Ambos dispositivos muestran {sas}?",
+  "mobile.enrollDone": "Sincronización unida — tus notas están en camino",
+  "mobile.cameraDenied": "Permiso de cámara denegado",
+  "mobile.captured": "Capturado",
+  "mobile.linkNeedsVault": "Abre un baúl para terminar esta acción"
 }

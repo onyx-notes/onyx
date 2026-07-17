@@ -54,6 +54,12 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["onyx"]
+      }
+    },
     "updater": {
       "active": false,
       "endpoints": [

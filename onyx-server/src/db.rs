@@ -696,3 +696,159 @@ impl Db {
         Ok((ops, head as u64))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onyx_proto::EncOp;
+
+    const V: [u8; 16] = [1; 16];
+    const DEV: [u8; 16] = [2; 16];
+
+    #[test]
+    fn duplicate_op_id_is_idempotent() {
+        let db = Db::open_in_memory().unwrap();
+        let op = EncOp::incremental([9; 16], b"delta", vec![0xAB]);
+
+        // First push assigns seq 1.
+        assert_eq!(db.append_ops(V, DEV, std::slice::from_ref(&op)).unwrap(), 1);
+        // A resend of the SAME op (lost ack) must NOT advance the head or add
+        // a row — the op_id already exists.
+        assert_eq!(db.append_ops(V, DEV, std::slice::from_ref(&op)).unwrap(), 1);
+        let (ops, head) = db.ops_since(V, 0, 100).unwrap();
+        assert_eq!(head, 1);
+        assert_eq!(ops.len(), 1, "duplicate op must not be stored twice");
+
+        // A genuinely new op still advances.
+        let op2 = EncOp::incremental([9; 16], b"delta-2", vec![0xCD]);
+        assert_eq!(db.append_ops(V, DEV, &[op2]).unwrap(), 2);
+    }
+
+    #[test]
+    fn checkpoint_prunes_earlier_ops_for_that_doc_only() {
+        let db = Db::open_in_memory().unwrap();
+        let doc = [7; 16];
+        let other = [8; 16];
+        // Five incremental ops for `doc`, one for `other`.
+        for i in 0..5u8 {
+            let op = EncOp::incremental(doc, &[i], vec![i]);
+            db.append_ops(V, DEV, &[op]).unwrap();
+        }
+        let other_op = EncOp::incremental(other, b"x", vec![0xFF]);
+        db.append_ops(V, DEV, &[other_op]).unwrap(); // seq 6
+        assert_eq!(db.ops_since(V, 0, 100).unwrap().0.len(), 6);
+
+        // A checkpoint for `doc` supersedes its earlier ops.
+        let checkpoint = EncOp::checkpoint(doc, b"full-state", vec![0xAA]);
+        let head = db.append_ops(V, DEV, &[checkpoint]).unwrap();
+        assert_eq!(head, 7);
+
+        let (ops, _) = db.ops_since(V, 0, 100).unwrap();
+        // `doc`'s five earlier ops are gone; the checkpoint (seq 7) remains.
+        // `other`'s op (seq 6) is untouched.
+        let doc_ops: Vec<_> = ops.iter().filter(|o| o.doc_id == doc).collect();
+        assert_eq!(doc_ops.len(), 1);
+        assert_eq!(doc_ops[0].seq, 7);
+        assert!(ops.iter().any(|o| o.doc_id == other && o.seq == 6));
+    }
+
+    #[test]
+    fn docs_over_threshold_reports_heavy_docs() {
+        let db = Db::open_in_memory().unwrap();
+        let heavy = [3; 16];
+        let light = [4; 16];
+        for i in 0..4u8 {
+            db.append_ops(V, DEV, &[EncOp::incremental(heavy, &[i], vec![i])])
+                .unwrap();
+        }
+        db.append_ops(V, DEV, &[EncOp::incremental(light, b"a", vec![1])])
+            .unwrap();
+
+        let over = db.docs_over_threshold(V, 4).unwrap();
+        assert_eq!(over, vec![heavy]);
+        // Below threshold: nothing.
+        assert!(db.docs_over_threshold(V, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn chunked_blob_roundtrips_and_supports_ranges() {
+        let db = Db::open_in_memory().unwrap();
+        // Three unequal chunks.
+        let c0 = vec![0xAA; 100];
+        let c1 = vec![0xBB; 60];
+        let c2 = vec![0xCC; 30];
+        let full: Vec<u8> = c0.iter().chain(&c1).chain(&c2).copied().collect();
+        let hash = blake3::hash(&full).to_hex().to_string();
+        let size = full.len() as u64;
+
+        db.blob_begin(V, &hash, 3, size).unwrap();
+        db.blob_put_chunk(V, &hash, 0, &c0).unwrap();
+        db.blob_put_chunk(V, &hash, 2, &c2).unwrap();
+
+        // Missing the middle chunk: not complete, and status shows the gap.
+        assert!(!db.blob_try_complete(V, &hash).unwrap());
+        assert!(!db.has_blob(V, &hash).unwrap());
+        let status = db.blob_status(V, &hash).unwrap().unwrap();
+        assert_eq!(status.present, vec![0, 2]);
+        assert_eq!(status.total, 3);
+        assert!(!status.complete);
+
+        // Re-uploading a present chunk is a no-op (idempotent resume).
+        db.blob_put_chunk(V, &hash, 0, &c0).unwrap();
+
+        db.blob_put_chunk(V, &hash, 1, &c1).unwrap();
+        assert!(db.blob_try_complete(V, &hash).unwrap());
+        assert!(db.has_blob(V, &hash).unwrap());
+        assert_eq!(db.blob_size(V, &hash).unwrap(), Some(size));
+        assert_eq!(db.get_blob(V, &hash).unwrap().unwrap(), full);
+
+        // Ranges spanning chunk boundaries return exact slices.
+        assert_eq!(
+            db.blob_read_range(V, &hash, 90, 30).unwrap().unwrap(),
+            full[90..120]
+        );
+        assert_eq!(
+            db.blob_read_range(V, &hash, 0, size).unwrap().unwrap(),
+            full
+        );
+        assert_eq!(
+            db.blob_read_range(V, &hash, 155, 100).unwrap().unwrap(),
+            full[155..]
+        );
+        assert!(
+            db.blob_read_range(V, &hash, size, 10)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reassembly_hash_mismatch_discards_the_upload() {
+        let db = Db::open_in_memory().unwrap();
+        // Claim a hash that the chunks won't reassemble to.
+        let lie = "0".repeat(64);
+        db.blob_begin(V, &lie, 2, 20).unwrap();
+        db.blob_put_chunk(V, &lie, 0, &[1; 10]).unwrap();
+        db.blob_put_chunk(V, &lie, 1, &[2; 10]).unwrap();
+
+        match db.blob_try_complete(V, &lie) {
+            Err(DbError::HashMismatch) => {}
+            other => panic!("expected HashMismatch, got {other:?}"),
+        }
+        // Corrupt upload is gone: no partial state lingers.
+        assert!(db.blob_status(V, &lie).unwrap().is_none());
+        assert!(!db.has_blob(V, &lie).unwrap());
+    }
+
+    #[test]
+    fn single_shot_put_blob_stores_complete() {
+        let db = Db::open_in_memory().unwrap();
+        let data = vec![0x42; 500];
+        let hash = blake3::hash(&data).to_hex().to_string();
+        db.put_blob(V, &hash, &data).unwrap();
+        assert!(db.has_blob(V, &hash).unwrap());
+        assert_eq!(db.get_blob(V, &hash).unwrap().unwrap(), data);
+        assert_eq!(db.blob_size(V, &hash).unwrap(), Some(500));
+    }
+}

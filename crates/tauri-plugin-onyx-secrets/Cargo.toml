@@ -1,0 +1,19 @@
+[package]
+name = "tauri-plugin-onyx-secrets"
+description = "Onyx mobile secret storage: iOS Keychain / Android Keystore, with biometric-bound entries"
+links = "tauri-plugin-onyx-secrets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[build-dependencies]
+tauri-plugin = { workspace = true }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { workspace = true }
+thiserror = { workspace = true }

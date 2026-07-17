@@ -2,6 +2,13 @@
 // sheets. Shares the editor, search, settings, and AI components with the
 // desktop shell — only the chrome differs (see the mobile plan §4).
 
+import {
+  Format,
+  checkPermissions,
+  requestPermissions,
+  scan,
+} from "@tauri-apps/plugin-barcode-scanner";
+import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type ManagedVault, type NoteInfo, type Settings, api } from "../api";
@@ -147,12 +154,34 @@ export default function MobileApp() {
 
   const enterVault = async (vault: ManagedVault) => {
     try {
-      let passphrase: string | undefined;
+      // Encrypted vaults: biometric first (if enrolled), passphrase as the
+      // universal fallback. After a passphrase unlock, offer enrollment.
+      let openedBiometric = false;
       if (vault.encrypted) {
-        passphrase = window.prompt(t("vault.passphrasePrompt")) ?? undefined;
-        if (!passphrase) return;
+        const bio = await api
+          .biometricStatus(vault.path)
+          .catch(() => ({ available: false, enrolled: false }));
+        if (bio.enrolled) {
+          openedBiometric = await api
+            .openVaultBiometric(vault.path)
+            .then(() => true)
+            .catch(() => false);
+        }
+        if (!openedBiometric) {
+          const passphrase = window.prompt(t("vault.passphrasePrompt"));
+          if (!passphrase) return;
+          await api.openVault(vault.path, passphrase);
+          if (
+            bio.available &&
+            !bio.enrolled &&
+            window.confirm(t("mobile.bioEnrollPrompt"))
+          ) {
+            await api.enableBiometricUnlock(vault.path).catch(report);
+          }
+        }
+      } else {
+        await api.openVault(vault.path, undefined);
       }
-      await api.openVault(vault.path, passphrase);
       const loaded = await api.getSettings();
       setSettings(loaded);
       applySettings(loaded);
@@ -196,11 +225,106 @@ export default function MobileApp() {
     setVaults(await api.listManagedVaults().catch(() => []));
   };
 
+  // ----- deep links (share target, quick actions, QR enrollment) --------
+
+  // A link arriving before any vault is open waits here and replays after
+  // the user opens one (e.g. scan enrollment QR → create vault → auto-join).
+  const [pendingLink, setPendingLink] = createSignal<string | null>(null);
+
+  const joinSync = async (serverUrl: string) => {
+    if (!window.confirm(t("mobile.joinConfirm", { server: serverUrl }))) return;
+    try {
+      const { code } = await api.enrollStart(serverUrl);
+      setStatus(t("mobile.enrollCode", { code }));
+      const { sas } = await api.enrollWait();
+      if (!window.confirm(t("mobile.sasConfirm", { sas }))) {
+        await api.enrollCancel();
+        setStatus("");
+        return;
+      }
+      await api.enrollConfirm();
+      setStatus(t("mobile.enrollDone"));
+    } catch (error) {
+      await api.enrollCancel().catch(() => undefined);
+      report(error);
+    }
+  };
+
+  const handleDeepLink = async (raw: string) => {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      return;
+    }
+    if (url.protocol !== "onyx:") return;
+    const route = url.host || url.pathname.replace(/^\/+/, "");
+    if (!vaultOpen()) {
+      setPendingLink(raw);
+      setStatus(t("mobile.linkNeedsVault"));
+      return;
+    }
+    try {
+      switch (route) {
+        case "capture": {
+          const text = url.searchParams.get("text") ?? "";
+          const title = url.searchParams.get("title");
+          if (text.length === 0) return void newNote();
+          const body = title ? `**${title}**\n${text}` : text;
+          await api.quickCapture(body, localDate());
+          await refreshNotes();
+          setStatus(t("mobile.captured"));
+          break;
+        }
+        case "daily":
+          await openDaily();
+          break;
+        case "enroll": {
+          const server = url.searchParams.get("server");
+          if (server) await joinSync(server);
+          break;
+        }
+      }
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  createEffect(
+    on(vaultOpen, (open) => {
+      const link = pendingLink();
+      if (open && link !== null) {
+        setPendingLink(null);
+        void handleDeepLink(link);
+      }
+    }),
+  );
+
+  const scanJoinQr = async () => {
+    try {
+      let permission = await checkPermissions();
+      if (permission !== "granted") permission = await requestPermissions();
+      if (permission !== "granted") return setStatus(t("mobile.cameraDenied"));
+      const result = await scan({ windowed: false, formats: [Format.QRCode] });
+      if (result.content) void handleDeepLink(result.content);
+    } catch (error) {
+      report(error);
+    }
+  };
+
   onMount(async () => {
     document.body.classList.add("mobile");
     onCleanup(() => document.body.classList.remove("mobile"));
 
     setVaults(await api.listManagedVaults().catch(() => []));
+
+    // Deep links: cold-start URL + while-running opens. Fails harmlessly in
+    // the desktop dev override where the plugin isn't registered.
+    onOpenUrl((urls) => {
+      for (const link of urls) void handleDeepLink(link);
+    })
+      .then((unlistenLinks) => onCleanup(unlistenLinks))
+      .catch(() => undefined);
 
     const unlisten = await api.onVaultEvent(async (event) => {
       await refreshNotes();
@@ -281,7 +405,18 @@ export default function MobileApp() {
   };
 
   return (
-    <Show when={vaultOpen()} fallback={<VaultManager vaults={vaults()} onOpen={enterVault} onCreate={createVault} status={status()} />}>
+    <Show
+      when={vaultOpen()}
+      fallback={
+        <VaultManager
+          vaults={vaults()}
+          onOpen={enterVault}
+          onCreate={createVault}
+          onScan={() => void scanJoinQr()}
+          status={status()}
+        />
+      }
+    >
       <div class="mobile-app">
         <header class="mobile-topbar">
           <button class="mobile-icon" onClick={() => setDrawerOpen(true)}>
@@ -418,6 +553,7 @@ function VaultManager(props: {
   vaults: ManagedVault[];
   onOpen: (vault: ManagedVault) => void;
   onCreate: () => void;
+  onScan: () => void;
   status: string;
 }) {
   return (
@@ -436,6 +572,9 @@ function VaultManager(props: {
       </div>
       <button class="settings-button primary mobile-create" onClick={() => props.onCreate()}>
         {t("mobile.createVault")}
+      </button>
+      <button class="settings-button mobile-create" onClick={() => props.onScan()}>
+        {t("mobile.scanQr")}
       </button>
       <Show when={props.status}>
         <div class="mobile-status">{props.status}</div>

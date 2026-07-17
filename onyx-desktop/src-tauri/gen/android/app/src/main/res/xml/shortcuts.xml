@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static launcher quick actions (long-press the app icon). Both resolve
+     through the onyx:// deep-link route the frontend already handles. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="capture"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_capture">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="onyx://capture"
+            android:targetPackage="dev.onyx.app"
+            android:targetClass="dev.onyx.app.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="daily"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_daily">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="onyx://daily"
+            android:targetPackage="dev.onyx.app"
+            android:targetClass="dev.onyx.app.MainActivity" />
+    </shortcut>
+</shortcuts>

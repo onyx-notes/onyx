@@ -79,6 +79,134 @@ jobs:
           releaseDraft: true
           includeUpdaterJson: true
 
+  android:
+    name: android (arm64 AAB + APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: onyx-desktop/pnpm-lock.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+      - name: Install NDK r28
+        run: sdkmanager "ndk;28.0.13004108"
+      - name: Install frontend deps
+        working-directory: onyx-desktop
+        run: pnpm install --frozen-lockfile
+
+      # Play upload keystore, provided as base64 secret. Without it the
+      # build still produces an unsigned AAB (debug-signable for testing).
+      - name: Decode keystore
+        if: ${{ env.KEYSTORE != '' }}
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+        run: |
+          echo "$KEYSTORE" | base64 -d > $RUNNER_TEMP/upload.keystore
+          cat > onyx-desktop/src-tauri/gen/android/keystore.properties <<EOF
+          storeFile=$RUNNER_TEMP/upload.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build AAB + APK (arm64)
+        working-directory: onyx-desktop
+        env:
+          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/28.0.13004108
+        run: |
+          pnpm tauri android build --target aarch64
+          pnpm tauri android build --apk --target aarch64
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            onyx-desktop/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/*.aab
+            onyx-desktop/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          draft: true
+
+      # Play internal track, once a service-account key secret exists.
+      - name: Upload to Play (internal track)
+        if: ${{ env.PLAY_KEY != '' }}
+        env:
+          PLAY_KEY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          echo "$PLAY_KEY" > $RUNNER_TEMP/play-key.json
+          gem install fastlane --no-document
+          fastlane supply --package_name dev.onyx.app \
+            --json_key $RUNNER_TEMP/play-key.json \
+            --aab onyx-desktop/src-tauri/gen/android/app/build/outputs/bundle/universalRelease/app-universal-release.aab \
+            --track internal --skip_upload_images --skip_upload_screenshots
+
+  # iOS release requires the gen/apple scaffold (`tauri ios init` on a Mac)
+  # plus fastlane match certificates. The job is gated on that scaffold
+  # existing so the workflow stays green until the iOS leg lands.
+  ios:
+    name: ios (TestFlight)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check iOS scaffold
+        id: scaffold
+        run: |
+          if [ -d onyx-desktop/src-tauri/gen/apple ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "gen/apple missing — run 'tauri ios init' on a Mac and commit it; skipping."
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.scaffold.outputs.present == 'true'
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scaffold.outputs.present == 'true'
+      - uses: pnpm/action-setup@v4
+        if: steps.scaffold.outputs.present == 'true'
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        if: steps.scaffold.outputs.present == 'true'
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: onyx-desktop/pnpm-lock.yaml
+      - name: Install frontend deps
+        if: steps.scaffold.outputs.present == 'true'
+        working-directory: onyx-desktop
+        run: pnpm install --frozen-lockfile
+      - name: Build IPA
+        if: steps.scaffold.outputs.present == 'true'
+        working-directory: onyx-desktop
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
+        run: pnpm tauri ios build --export-method app-store-connect
+      - name: Upload to TestFlight
+        if: steps.scaffold.outputs.present == 'true' && env.KEY != ''
+        env:
+          KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          xcrun altool --upload-app --type ios \
+            -f onyx-desktop/src-tauri/gen/apple/build/arm64/*.ipa \
+            --apiKey ${{ secrets.APPLE_API_KEY_ID }} \
+            --apiIssuer ${{ secrets.APPLE_API_ISSUER }}
+
   server:
     name: server binary + image
     runs-on: ubuntu-latest

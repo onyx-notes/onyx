@@ -19,6 +19,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 keyring = { workspace = true }
 tauri-plugin-global-shortcut = { workspace = true }
 
+# Mobile-only plugins: hardware keystore secrets, QR enrollment scanning,
+# onyx:// deep links (capture + share target), touch haptics.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-onyx-secrets = { workspace = true }
+tauri-plugin-deep-link = { workspace = true }
+tauri-plugin-barcode-scanner = { workspace = true }
+tauri-plugin-haptics = { workspace = true }
+
 [build-dependencies]
 tauri-build = { workspace = true }
 

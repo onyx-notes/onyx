@@ -9,23 +9,84 @@
 
 const SERVICE: &str = "dev.onyx.app";
 
-// Mobile: no keyring backend exists; secrets fall back to file storage
-// until the onyx-secrets Keychain/Keystore plugin lands (mobile M4).
-// Honest `available() == false` keeps callers on the fallback path.
+// Mobile: iOS Keychain / Android Keystore via the onyx-secrets plugin.
+// The facade is free functions (callers predate the plugin), so the app
+// handle is stashed once at setup.
 #[cfg(mobile)]
-pub fn set(_key: &str, _value: &str) -> bool {
-    false
+mod mobile {
+    use std::sync::OnceLock;
+
+    use tauri_plugin_onyx_secrets::OnyxSecretsExt;
+
+    static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+    /// Called once from the app's setup hook.
+    pub fn init(app: tauri::AppHandle) {
+        let _ = APP.set(app);
+    }
+
+    pub(super) fn with_store<T>(
+        callback: impl FnOnce(&tauri_plugin_onyx_secrets::OnyxSecrets<tauri::Wry>) -> T,
+    ) -> Option<T> {
+        APP.get().map(|app| callback(app.onyx_secrets()))
+    }
+}
+
+#[cfg(mobile)]
+pub use mobile::init;
+
+#[cfg(mobile)]
+pub fn set(key: &str, value: &str) -> bool {
+    mobile::with_store(|store| store.set(key, value).is_ok()).unwrap_or(false)
 }
 #[cfg(mobile)]
-pub fn get(_key: &str) -> Option<String> {
-    None
+pub fn get(key: &str) -> Option<String> {
+    mobile::with_store(|store| store.get(key).ok().flatten()).flatten()
 }
 #[cfg(mobile)]
-pub fn delete(_key: &str) {}
+pub fn delete(key: &str) {
+    let _ = mobile::with_store(|store| store.delete(key));
+}
 #[cfg(mobile)]
 pub fn available() -> bool {
     let _ = SERVICE;
-    false
+    mobile::with_store(|store| store.availability().secure).unwrap_or(false)
+}
+
+/// Can this device enroll biometric-bound secrets?
+#[cfg(mobile)]
+pub fn biometric_available() -> bool {
+    mobile::with_store(|store| store.availability().biometric).unwrap_or(false)
+}
+
+/// Store a biometric-bound secret; prompts the user (storing is consent).
+/// Blocking — call from a blocking-capable thread.
+#[cfg(mobile)]
+pub fn set_protected(key: &str, value: &str, reason: &str) -> Result<(), String> {
+    mobile::with_store(|store| {
+        store
+            .set_protected(key, value, reason)
+            .map_err(|error| error.to_string())
+    })
+    .unwrap_or_else(|| Err("secret store not initialized".into()))
+}
+
+/// Read a biometric-bound secret; triggers the OS biometric prompt.
+/// `Ok(None)` means never enrolled. Blocking.
+#[cfg(mobile)]
+pub fn get_protected(key: &str, reason: &str) -> Result<Option<String>, String> {
+    mobile::with_store(|store| {
+        store
+            .get_protected(key, reason)
+            .map_err(|error| error.to_string())
+    })
+    .unwrap_or_else(|| Err("secret store not initialized".into()))
+}
+
+/// Remove a biometric-bound secret (idempotent).
+#[cfg(mobile)]
+pub fn delete_protected(key: &str) {
+    let _ = mobile::with_store(|store| store.delete_protected(key));
 }
 
 /// Store a secret under `key`. Returns whether the OS keychain accepted it

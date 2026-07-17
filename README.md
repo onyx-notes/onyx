@@ -96,7 +96,9 @@ cargo run --release -p xtask -- ci-perf /tmp/corpus 10000  # perf budgets
 
 ## License
 
-- Application, server, and core crates: [AGPL-3.0-or-later](LICENSE).
+- Application, server, and core crates: [AGPL-3.0-or-later](LICENSE),
+  with an [App Store additional permission](LICENSE-EXCEPTIONS.md) so
+  official builds can ship on the Apple App Store and Google Play.
 - The public plugin API types (`@onyx/api`) and plugin template are MIT so
   plugin authors may license their plugins however they wish.
 

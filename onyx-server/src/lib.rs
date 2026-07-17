@@ -20,8 +20,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use parking_lot::Mutex;
+
+/// Max request body the server buffers. Comfortably above a blob chunk
+/// (`BLOB_CHUNK_BYTES`) and a batched ops push; large attachments arrive as
+/// bounded chunks, never one giant body.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub use db::Db;
 
@@ -91,6 +97,7 @@ pub fn app(state: Arc<ServerState>) -> Router {
             "/v1/vaults/{vault}/blobs/{hash}/chunks/{idx}",
             axum::routing::put(routes::put_blob_chunk),
         )
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 

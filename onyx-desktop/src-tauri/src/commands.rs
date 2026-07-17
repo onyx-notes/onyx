@@ -1930,3 +1930,123 @@ pub fn platform_info() -> serde_json::Value {
         "mobile": cfg!(mobile),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Biometric vault unlock (mobile)
+// ---------------------------------------------------------------------------
+//
+// After a successful passphrase unlock the user may enroll the raw VaultKey
+// into the OS keystore, biometric-bound (Face ID / fingerprint, invalidated
+// on enrollment change — see the onyx-secrets plugin). The passphrase is
+// never stored; losing the biometric path always falls back to it.
+
+/// Keystore entry name for a vault's biometric-bound key. Path-derived so
+/// separators never leak into prefs/keychain account names.
+#[cfg(mobile)]
+fn biometric_entry(path: &str) -> String {
+    let digest = blake3::hash(path.as_bytes());
+    format!("vault-key-{}", data_encoding::HEXLOWER.encode(&digest.as_bytes()[..8]))
+}
+
+/// Marker key (plain storage) recording that a vault has an enrollment.
+/// Kept separate because probing the protected entry itself would trigger
+/// a biometric prompt on iOS.
+#[cfg(mobile)]
+fn biometric_marker(path: &str) -> String {
+    format!("{}.enrolled", biometric_entry(path))
+}
+
+/// Can this vault offer / use biometric unlock right now?
+#[tauri::command]
+pub fn biometric_status(path: String) -> serde_json::Value {
+    #[cfg(mobile)]
+    {
+        let available = crate::secrets::biometric_available();
+        let enrolled = available && crate::secrets::get(&biometric_marker(&path)).is_some();
+        serde_json::json!({ "available": available, "enrolled": enrolled })
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = path;
+        serde_json::json!({ "available": false, "enrolled": false })
+    }
+}
+
+/// Enroll the open (encrypted) vault's key for biometric unlock. Prompts
+/// the user — presenting a biometric is the consent step.
+#[tauri::command]
+pub async fn enable_biometric_unlock(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<()> {
+    #[cfg(mobile)]
+    {
+        let key = state
+            .with_engine(|engine| {
+                engine
+                    .crypto_key()
+                    .ok_or_else(|| "biometric unlock requires an encrypted vault".to_string())
+            })?;
+        let entry = biometric_entry(&path);
+        let marker = biometric_marker(&path);
+        // The keystore prompt blocks until the user answers; keep it off
+        // the async runtime.
+        tauri::async_runtime::spawn_blocking(move || {
+            let hex = data_encoding::HEXLOWER.encode(&key.to_bytes());
+            crate::secrets::set_protected(&entry, &hex, "Enable biometric unlock")?;
+            crate::secrets::set(&marker, "1");
+            Ok(())
+        })
+        .await
+        .map_err(err)?
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = (state, path);
+        Err("biometric unlock is mobile-only".into())
+    }
+}
+
+/// Open an encrypted vault with its biometric-enrolled key (no passphrase).
+#[tauri::command]
+pub async fn open_vault_biometric(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<VaultInfo> {
+    #[cfg(mobile)]
+    {
+        let entry = biometric_entry(&path);
+        let hex = tauri::async_runtime::spawn_blocking(move || {
+            crate::secrets::get_protected(&entry, "Unlock vault")
+        })
+        .await
+        .map_err(err)??
+        .ok_or("no biometric enrollment for this vault")?;
+        let key: [u8; 32] = data_encoding::HEXLOWER
+            .decode(hex.as_bytes())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or("corrupt biometric key entry")?;
+        let root = std::path::PathBuf::from(&path);
+        let engine = Engine::open_encrypted_with_key(&root, key).map_err(err)?;
+        install_engine(&app, &state, &root, path, engine)
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = (app, state, path);
+        Err("biometric unlock is mobile-only".into())
+    }
+}
+
+/// Remove a vault's biometric enrollment (keystore key + marker).
+#[tauri::command]
+pub fn disable_biometric_unlock(path: String) {
+    #[cfg(mobile)]
+    {
+        crate::secrets::delete_protected(&biometric_entry(&path));
+        crate::secrets::delete(&biometric_marker(&path));
+    }
+    #[cfg(not(mobile))]
+    let _ = path;
+}

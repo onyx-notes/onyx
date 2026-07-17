@@ -3,6 +3,7 @@
 // onPointerDown+preventDefault so taps never steal focus from the editor
 // (a focus bounce would dismiss the keyboard).
 
+import { selectionFeedback } from "@tauri-apps/plugin-haptics";
 import type { JSX } from "solid-js";
 
 import type { EditorControls } from "../components/Editor";
@@ -20,6 +21,8 @@ export default function MobileToolbar(props: { controls: EditorControls }) {
       aria-label={t(titleKey)}
       onPointerDown={(event) => {
         event.preventDefault();
+        // Best-effort tick; absent in the desktop dev override.
+        void selectionFeedback().catch(() => undefined);
         action();
       }}
     >

@@ -7,6 +7,7 @@ members = [
     "crates/onyx-proto",
     "crates/onyx-sync",
     "crates/onyx-testkit",
+    "crates/tauri-plugin-onyx-secrets",
     "onyx-desktop/src-tauri",
     "onyx-server",
     "xtask",
@@ -67,7 +68,14 @@ nucleo-matcher = "0.3"
 # desktop shell
 tauri = "2"
 tauri-build = "2"
+tauri-plugin = { version = "2", features = ["build"] }
 tauri-plugin-global-shortcut = "2"
+
+# mobile shell
+tauri-plugin-onyx-secrets = { path = "crates/tauri-plugin-onyx-secrets" }
+tauri-plugin-deep-link = "2"
+tauri-plugin-barcode-scanner = "2"
+tauri-plugin-haptics = "2"
 
 # sync / server
 loro = "1"

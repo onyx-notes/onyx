@@ -213,6 +213,18 @@ impl Engine {
         Self::open_with_key(root, key)
     }
 
+    /// Unlock with the raw vault key (mobile biometric unlock: the key
+    /// comes back from the OS keystore instead of a passphrase KDF).
+    /// Wrong-key detection: the keyfile can't verify it, but the first
+    /// filename decryption fails immediately, surfacing as a vault error.
+    #[cfg_attr(not(mobile), allow(dead_code))]
+    pub fn open_encrypted_with_key(root: &Path, key: [u8; 32]) -> Result<Self, EngineError> {
+        if !is_encrypted(root) {
+            return Err(EngineError::PassphraseRequired);
+        }
+        Self::open_with_key(root, VaultKey::from_bytes(key))
+    }
+
     /// Create a new encrypted vault at an empty (or fresh) directory.
     pub fn create_encrypted(root: &Path, passphrase: &str) -> Result<Self, EngineError> {
         if is_encrypted(root) {
@@ -220,8 +232,14 @@ impl Engine {
         }
         std::fs::create_dir_all(root.join(".onyx"))?;
         let key = VaultKey::generate();
-        let keyfile = Keyfile::seal(&key, passphrase, KdfParams::DESKTOP)
-            .map_err(|_| EngineError::WrongPassphrase)?;
+        // Phones get the lighter argon2id profile; the keyfile records its
+        // params, so vaults unlock anywhere regardless of where created.
+        #[cfg(mobile)]
+        let kdf = KdfParams::MOBILE;
+        #[cfg(not(mobile))]
+        let kdf = KdfParams::DESKTOP;
+        let keyfile =
+            Keyfile::seal(&key, passphrase, kdf).map_err(|_| EngineError::WrongPassphrase)?;
         std::fs::write(root.join(KEYFILE_PATH), keyfile)?;
         Self::open_with_key(root, key)
     }
@@ -855,7 +873,13 @@ impl Engine {
             if stored.as_ref().map(|(hash, _, _)| *hash) == Some(plaintext_hash) {
                 continue;
             }
-            let ciphertext = onyx_crypto::encrypt(&sync.key, &content);
+            // Convergent (deterministic) encryption is essential here: the
+            // blob is content-addressed by blake3(ciphertext), so a random
+            // nonce would give a fresh hash on every retry — breaking upload
+            // resume (each attempt would restart under a new hash) and
+            // cross-device dedup. Convergent keeps the hash stable for equal
+            // content, which is exactly what resume and dedup need.
+            let ciphertext = onyx_crypto::encrypt_convergent(&sync.key, &content);
             let blob_hash = blake3::hash(&ciphertext).to_hex().to_string();
             uploads.push(BlobUpload {
                 path,
@@ -1434,6 +1458,63 @@ mod sync_tests {
                 ciphertext: push.ciphertext.clone(),
             })
             .collect()
+    }
+
+    #[test]
+    fn attachment_blob_hash_is_stable_across_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/pic.png"), b"\x89PNG-ish binary payload").unwrap();
+        let mut engine = sync_engine(dir.path(), 1);
+        engine
+            .apply_event(&onyx_core::VaultEvent::BulkChange)
+            .unwrap();
+
+        let first = engine.attachments_to_upload().unwrap();
+        assert_eq!(first.len(), 1);
+        let hash = first[0].blob_hash.clone();
+
+        // Called again WITHOUT marking uploaded — models a retry after a
+        // failed transfer. The content-addressed hash must be identical, or
+        // resume would restart under a new hash and never converge.
+        let second = engine.attachments_to_upload().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            second[0].blob_hash, hash,
+            "blob hash must be deterministic across retries (convergent encryption)"
+        );
+        assert_eq!(second[0].ciphertext, first[0].ciphertext);
+    }
+
+    #[test]
+    fn checkpoint_export_reconverges_a_fresh_engine() {
+        let dir_a = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("doc.md"), "v1\n").unwrap();
+        let mut a = sync_engine(dir_a.path(), 1);
+        let p0 = a.sync_collect().unwrap();
+        a.sync_mark_pushed(&p0).unwrap();
+        for i in 2..6 {
+            a.write_note(&note("doc.md"), &format!("v{i}\n")).unwrap();
+            let p = a.sync_collect().unwrap();
+            a.sync_mark_pushed(&p).unwrap();
+        }
+
+        // A full-state checkpoint of the doc.
+        let doc_id = *a.vault().note_id(&note("doc.md")).as_bytes();
+        let checkpoints = a.sync_collect_checkpoints(&[doc_id]).unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert!(checkpoints[0].checkpoint);
+
+        // A fresh engine that sees ONLY the checkpoint (every prior op having
+        // been pruned server-side) still converges to the current content.
+        let dir_b = tempfile::tempdir().unwrap();
+        let mut b = sync_engine(dir_b.path(), 2);
+        let changed = b.sync_apply_remote(&as_stored(&checkpoints, 1)).unwrap();
+        assert_eq!(changed, vec!["doc.md".to_owned()]);
+        assert_eq!(
+            std::fs::read_to_string(dir_b.path().join("doc.md")).unwrap(),
+            "v5\n"
+        );
     }
 
     #[test]
