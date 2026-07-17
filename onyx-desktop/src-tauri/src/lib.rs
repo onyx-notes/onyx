@@ -9,8 +9,9 @@ mod engine;
 mod protocol;
 mod settings;
 mod state;
+pub mod sync;
 
-pub use engine::{Engine, EngineError};
+pub use engine::{Engine, EngineError, SyncState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -45,6 +46,9 @@ pub fn run() {
             commands::daily_note,
             commands::render_note,
             commands::note_headings,
+            commands::sync_enable,
+            commands::sync_join,
+            commands::sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

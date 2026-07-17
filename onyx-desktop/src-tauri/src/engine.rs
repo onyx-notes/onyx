@@ -42,11 +42,44 @@ pub enum EngineError {
     VaultExists,
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Sync(#[from] onyx_sync::SyncError),
+    #[error("sync is not enabled for this vault")]
+    SyncDisabled,
 }
 
 /// Is the directory an encrypted Onyx vault?
 pub fn is_encrypted(root: &Path) -> bool {
     root.join(KEYFILE_PATH).is_file()
+}
+
+/// Per-vault sync state: the sidecar store, the op-encryption key, this
+/// device's CRDT peer id, and an in-memory doc cache.
+pub struct SyncState {
+    store: onyx_sync::SyncStore,
+    key: VaultKey,
+    peer: u64,
+    docs: std::collections::HashMap<[u8; 16], onyx_sync::SyncDoc>,
+}
+
+impl SyncState {
+    pub fn new(store: onyx_sync::SyncStore, key: VaultKey, peer: u64) -> Self {
+        Self {
+            store,
+            key,
+            peer,
+            docs: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// One encrypted update ready to push, remembering the version it covers
+/// so it's only marked pushed if THAT export succeeded (edits racing the
+/// push stay dirty).
+pub struct PendingPush {
+    pub doc_id: [u8; 16],
+    pub ciphertext: Vec<u8>,
+    version: Vec<u8>,
 }
 
 pub struct Engine {
@@ -58,6 +91,8 @@ pub struct Engine {
     /// Present for encrypted vaults: translates on-disk ciphertext names
     /// to vault paths for the watcher.
     crypto: Option<Arc<CryptoFs>>,
+    /// Present when sync is enabled for this vault.
+    sync: Option<SyncState>,
     /// Search commits are debounced by the caller; this tracks dirtiness.
     search_dirty: bool,
 }
@@ -134,12 +169,21 @@ impl Engine {
             search,
             quick,
             crypto,
+            sync: None,
             search_dirty: false,
         })
     }
 
     pub fn is_encrypted_vault(&self) -> bool {
         self.crypto.is_some()
+    }
+
+    /// The vault key for encrypted vaults (sync derives its identity from
+    /// it); `None` for plaintext vaults.
+    pub fn crypto_key(&self) -> Option<VaultKey> {
+        self.crypto
+            .as_ref()
+            .map(|crypto| crypto.vault_key().clone())
     }
 
     /// Watcher path translator for encrypted vaults (`None` for plaintext).
@@ -240,6 +284,191 @@ impl Engine {
         self.search.remove(id)?;
         self.search_dirty = true;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Sync
+    // ------------------------------------------------------------------
+
+    pub fn enable_sync(&mut self, sync: SyncState) {
+        self.sync = Some(sync);
+    }
+
+    pub fn sync_enabled(&self) -> bool {
+        self.sync.is_some()
+    }
+
+    /// The server delivery cursor (last op seq we've applied).
+    pub fn sync_cursor(&self) -> u64 {
+        self.sync
+            .as_ref()
+            .and_then(|sync| sync.store.meta("cursor").ok().flatten())
+            .and_then(|bytes| bytes.try_into().ok().map(u64::from_le_bytes))
+            .unwrap_or(0)
+    }
+
+    pub fn set_sync_cursor(&mut self, cursor: u64) -> Result<(), EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        sync.store.set_meta("cursor", &cursor.to_le_bytes())?;
+        Ok(())
+    }
+
+    /// The outbox pass: fold any file changes into their CRDT docs (the
+    /// index's content hashes make this cheap for unchanged notes), then
+    /// export an encrypted update for every doc the server hasn't seen.
+    pub fn sync_collect(&mut self) -> Result<Vec<PendingPush>, EngineError> {
+        use std::collections::hash_map::Entry;
+
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+
+        // 1. Fold changed/new files into docs.
+        for record in self.index.all_notes()? {
+            if !record.is_markdown {
+                continue; // attachments: chunk sync in a later leg
+            }
+            let doc_id = *record.id.as_bytes();
+            let stored_hash = sync.store.materialized_hash(doc_id)?;
+            if stored_hash == Some(record.hash) {
+                continue; // unchanged since last fold — no file read
+            }
+            let content = self.vault.read_text(&record.path)?;
+            let content_hash = *blake3::hash(content.as_bytes()).as_bytes();
+            if stored_hash == Some(content_hash) {
+                continue; // index hash lagged; content actually unchanged
+            }
+
+            let doc = match sync.docs.entry(doc_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let doc = match sync.store.load_doc(doc_id, sync.peer)? {
+                        Some((doc, _)) => doc,
+                        None => {
+                            let doc = onyx_sync::SyncDoc::new(sync.peer);
+                            doc.set_path(record.path.as_str())?;
+                            doc
+                        }
+                    };
+                    entry.insert(doc)
+                }
+            };
+            doc.set_text(&content)?;
+            sync.store.save_doc(doc_id, doc, content_hash)?;
+        }
+
+        // 2. Export everything not yet pushed.
+        let mut pushes = Vec::new();
+        for doc_id in sync.store.all_doc_ids()? {
+            let doc = match sync.docs.entry(doc_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                        continue;
+                    };
+                    entry.insert(doc)
+                }
+            };
+            let pushed = sync.store.pushed_version(doc_id)?;
+            let current = doc.version();
+            if current != pushed {
+                let update = doc.export_from(&pushed)?;
+                pushes.push(PendingPush {
+                    doc_id,
+                    ciphertext: onyx_crypto::encrypt(&sync.key, &update),
+                    version: current,
+                });
+            }
+        }
+        Ok(pushes)
+    }
+
+    /// Record a successful push: only the exported versions are marked, so
+    /// edits that raced the push remain in the outbox.
+    pub fn sync_mark_pushed(&mut self, pushes: &[PendingPush]) -> Result<(), EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        for push in pushes {
+            sync.store.set_pushed_version(push.doc_id, &push.version)?;
+        }
+        Ok(())
+    }
+
+    /// Apply remote ops: decrypt, merge (folding any un-synced local file
+    /// edits first so nothing is overwritten), materialize changed docs to
+    /// disk. Returns the vault paths whose files changed.
+    pub fn sync_apply_remote(
+        &mut self,
+        ops: &[onyx_proto::StoredOp],
+    ) -> Result<Vec<String>, EngineError> {
+        use std::collections::hash_map::Entry;
+
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let mut changed_paths = Vec::new();
+
+        for op in ops {
+            let Ok(update) = onyx_crypto::decrypt(&sync.key, &op.ciphertext) else {
+                tracing::warn!(seq = op.seq, "undecryptable op skipped (wrong key?)");
+                continue;
+            };
+
+            let doc = match sync.docs.entry(op.doc_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let doc = match sync.store.load_doc(op.doc_id, sync.peer)? {
+                        Some((doc, _)) => doc,
+                        None => onyx_sync::SyncDoc::new(sync.peer),
+                    };
+                    entry.insert(doc)
+                }
+            };
+
+            // Fold un-synced local file edits BEFORE merging, so the CRDT
+            // merge (not a file overwrite) resolves concurrency.
+            if let Some(path_text) = doc.path() {
+                if let Ok(note_path) = NotePath::new(&path_text) {
+                    if let Ok(file_content) = self.vault.read_text(&note_path) {
+                        let file_hash = *blake3::hash(file_content.as_bytes()).as_bytes();
+                        let stored_hash = sync.store.materialized_hash(op.doc_id)?;
+                        if stored_hash != Some(file_hash) {
+                            doc.set_text(&file_content)?;
+                        }
+                    }
+                }
+            }
+
+            if doc.import(&update).is_err() {
+                tracing::warn!(seq = op.seq, "malformed CRDT update skipped");
+                continue;
+            }
+
+            let Some(path_text) = doc.path() else {
+                tracing::warn!(seq = op.seq, "op for doc with no path metadata");
+                continue;
+            };
+            let Ok(note_path) = NotePath::new(&path_text) else {
+                tracing::warn!(path = %path_text, "invalid path in synced doc");
+                continue;
+            };
+
+            let merged = doc.text();
+            let merged_hash = *blake3::hash(merged.as_bytes()).as_bytes();
+            let on_disk = self.vault.read_text(&note_path).ok();
+
+            if on_disk.as_deref() != Some(merged.as_str()) {
+                self.vault.write(&note_path, merged.as_bytes())?;
+                self.index
+                    .handle_event(&self.vault, &VaultEvent::Modified(note_path.clone()))?;
+                let id = self.vault.note_id(&note_path);
+                if let Some(record) = self.index.note(id)? {
+                    self.quick
+                        .upsert(id, &record.title, record.path.as_str(), &[]);
+                    self.search
+                        .upsert(id, record.path.as_str(), &record.title, &merged, &[])?;
+                    self.search_dirty = true;
+                }
+                changed_paths.push(path_text);
+            }
+            sync.store.save_doc(op.doc_id, doc, merged_hash)?;
+        }
+        Ok(changed_paths)
     }
 
     /// Flush pending search changes (debounced by the event loop).
@@ -510,5 +739,125 @@ mod tests {
         let engine = Engine::open(dir.path()).unwrap();
         assert_eq!(engine.index().note_count().unwrap(), 1);
         assert_eq!(engine.search("persisted-token", 5).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use onyx_crypto::VaultKey;
+    use onyx_sync::SyncStore;
+
+    use super::*;
+
+    fn note(path: &str) -> NotePath {
+        NotePath::new(path).unwrap()
+    }
+
+    fn sync_engine(dir: &std::path::Path, peer: u64) -> Engine {
+        let mut engine = Engine::open(dir).unwrap();
+        let store = SyncStore::open(&dir.join(".onyx/sync.db")).unwrap();
+        engine.enable_sync(SyncState::new(store, VaultKey::from_bytes([9; 32]), peer));
+        engine
+    }
+
+    /// Wrap pending pushes as server-stored ops (what a pull would return).
+    fn as_stored(pushes: &[PendingPush], seq_start: u64) -> Vec<onyx_proto::StoredOp> {
+        pushes
+            .iter()
+            .enumerate()
+            .map(|(index, push)| onyx_proto::StoredOp {
+                seq: seq_start + index as u64,
+                doc_id: push.doc_id,
+                ciphertext: push.ciphertext.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn notes_flow_between_engines() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("shared.md"), "# Shared\nfrom device A\n").unwrap();
+
+        let mut a = sync_engine(dir_a.path(), 1);
+        let mut b = sync_engine(dir_b.path(), 2);
+
+        // A pushes; B applies: the note appears on B's disk AND in B's index.
+        let pushes = a.sync_collect().unwrap();
+        assert_eq!(pushes.len(), 1);
+        let changed = b.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
+        a.sync_mark_pushed(&pushes).unwrap();
+        assert_eq!(changed, vec!["shared.md".to_owned()]);
+        assert_eq!(
+            std::fs::read_to_string(dir_b.path().join("shared.md")).unwrap(),
+            "# Shared\nfrom device A\n"
+        );
+        assert_eq!(b.index().note_count().unwrap(), 1);
+
+        // Nothing further to push from A (collect is idempotent)…
+        assert!(a.sync_collect().unwrap().is_empty());
+        // …and B's apply didn't create phantom outbox entries beyond its
+        // own copy of the doc (B pushes its imported state once).
+        let b_pushes = b.sync_collect().unwrap();
+        b.sync_mark_pushed(&b_pushes).unwrap();
+
+        // Concurrent edits on both devices.
+        b.write_note(
+            &note("shared.md"),
+            "# Shared\nfrom device A\nB's addition\n",
+        )
+        .unwrap();
+        a.write_note(&note("shared.md"), "# Shared (A's title)\nfrom device A\n")
+            .unwrap();
+
+        // Exchange through the "server".
+        let from_b = b.sync_collect().unwrap();
+        let changed_a = a.sync_apply_remote(&as_stored(&from_b, 10)).unwrap();
+        b.sync_mark_pushed(&from_b).unwrap();
+        assert_eq!(changed_a.len(), 1);
+
+        let from_a = a.sync_collect().unwrap();
+        let changed_b = b.sync_apply_remote(&as_stored(&from_a, 20)).unwrap();
+        a.sync_mark_pushed(&from_a).unwrap();
+        assert_eq!(changed_b.len(), 1);
+
+        // Both merged, neither edit lost.
+        let text_a = a.vault().read_text(&note("shared.md")).unwrap();
+        let text_b = b.vault().read_text(&note("shared.md")).unwrap();
+        assert_eq!(text_a, text_b);
+        assert!(text_a.contains("B's addition"));
+        assert!(text_a.contains("(A's title)"));
+    }
+
+    #[test]
+    fn own_ops_replayed_from_server_are_harmless() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "content").unwrap();
+        let mut engine = sync_engine(dir.path(), 1);
+
+        let pushes = engine.sync_collect().unwrap();
+        engine.sync_mark_pushed(&pushes).unwrap();
+        // The pull returns our own ops: applying them must be a no-op.
+        let changed = engine.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
+        assert!(changed.is_empty());
+        assert!(engine.sync_collect().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cursor_roundtrip_and_wrong_key_ops_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = sync_engine(dir.path(), 1);
+        assert_eq!(engine.sync_cursor(), 0);
+        engine.set_sync_cursor(17).unwrap();
+        assert_eq!(engine.sync_cursor(), 17);
+
+        // An op encrypted with a different key is skipped, not fatal.
+        let foreign = onyx_proto::StoredOp {
+            seq: 1,
+            doc_id: [5; 16],
+            ciphertext: onyx_crypto::encrypt(&VaultKey::from_bytes([8; 32]), b"data"),
+        };
+        let changed = engine.sync_apply_remote(&[foreign]).unwrap();
+        assert!(changed.is_empty());
     }
 }

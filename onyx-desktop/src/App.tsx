@@ -50,6 +50,7 @@ export default function App() {
     null,
   );
   const [status, setStatus] = createSignal("");
+  const [syncState, setSyncState] = createSignal<string | null>(null);
 
   const activePath = workspace.activePath;
 
@@ -261,6 +262,17 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     onCleanup(() => window.removeEventListener("keydown", onKey));
+
+    const poll = setInterval(async () => {
+      if (vaultRoot() === null) return;
+      try {
+        const info = await api.syncStatus();
+        setSyncState(info.enabled ? info.state : null);
+      } catch {
+        setSyncState(null);
+      }
+    }, 5000);
+    onCleanup(() => clearInterval(poll));
   });
 
   const wordCount = () =>
@@ -340,6 +352,13 @@ export default function App() {
             <span>{activePath() ?? ""}</span>
             <Show when={activePath()}>
               <span>{t("status.words", { count: wordCount() })}</span>
+            </Show>
+            <Show when={syncState()}>
+              {(state) => (
+                <span title={t("sync.statusTitle")}>
+                  {state() === "error" ? "⚠ sync" : "⟳ " + state()}
+                </span>
+              )}
             </Show>
             <span style={{ "margin-left": "auto" }}>{status()}</span>
             <Show when={vaultRoot()}>

@@ -3,7 +3,7 @@
 
 use onyx_core::NotePath;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::engine::Engine;
 use crate::state::{AppState, spawn_watcher};
@@ -114,9 +114,17 @@ fn install_engine(
 ) -> CmdResult<VaultInfo> {
     let note_count = engine.index().note_count().map_err(err)?;
     let encrypted = engine.is_encrypted_vault();
+    let sync_config = crate::sync::load_config(engine.vault());
 
     *state.engine.lock() = Some(engine);
     spawn_watcher(app, state, root).map_err(err)?;
+
+    // Sync was previously enabled for this vault: resume automatically.
+    if let Some(config) = sync_config {
+        if let Err(error) = start_sync(app, state, &config) {
+            tracing::warn!(%error, "sync auto-start failed");
+        }
+    }
 
     Ok(VaultInfo {
         root: path,
@@ -330,4 +338,133 @@ pub fn vault_tags(state: State<'_, AppState>) -> CmdResult<Vec<TagInfo>> {
             })
             .collect())
     })
+}
+
+// ---------------------------------------------------------------------------
+// Sync commands
+// ---------------------------------------------------------------------------
+
+/// Resolve config into (vault_id, op key), wire the engine, start the agent.
+pub(crate) fn start_sync(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    config: &crate::sync::SyncConfig,
+) -> CmdResult<()> {
+    use data_encoding::HEXLOWER;
+
+    let device_path = app.path().app_data_dir().map_err(err)?.join("device.key");
+    let device = crate::sync::DeviceIdentity::load_or_create(&device_path).map_err(err)?;
+    let peer = device.peer();
+
+    let (vault_id, op_key, root) = {
+        let mut guard = state.engine.lock();
+        let engine = guard.as_mut().ok_or("no vault is open")?;
+        let (vault_id, op_key) = match (&config.key, engine.crypto_key()) {
+            // Plaintext vault: key from config.
+            (Some(key_hex), _) => {
+                let key: [u8; 32] = HEXLOWER
+                    .decode(key_hex.as_bytes())
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or("corrupt sync config key")?;
+                let vault_id: [u8; 16] = HEXLOWER
+                    .decode(config.vault_id.as_bytes())
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or("corrupt sync config vault id")?;
+                (vault_id, onyx_crypto::VaultKey::from_bytes(key))
+            }
+            // Encrypted vault: derive everything from the vault key.
+            (None, Some(vault_key)) => crate::sync::derive_encrypted_sync_identity(&vault_key),
+            (None, None) => return Err("sync config missing key for plaintext vault".into()),
+        };
+        let root = engine.root().to_path_buf();
+        let store = onyx_sync::SyncStore::open(&root.join(".onyx/sync.db")).map_err(err)?;
+        engine.enable_sync(crate::engine::SyncState::new(store, op_key.clone(), peer));
+        (vault_id, op_key, root)
+    };
+    let _ = (op_key, root);
+
+    let client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
+    crate::state::spawn_sync_agent(app, state, client, vault_id);
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncEnabled {
+    /// Pairing code for plaintext vaults; encrypted vaults pair by
+    /// unlocking the same vault (keys derive identically).
+    pub code: Option<String>,
+}
+
+/// Enable sync on the open vault against `server_url`.
+#[tauri::command]
+pub fn sync_enable(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_url: String,
+) -> CmdResult<SyncEnabled> {
+    use data_encoding::HEXLOWER;
+
+    let (config, code) = {
+        let guard = state.engine.lock();
+        let engine = guard.as_ref().ok_or("no vault is open")?;
+        match engine.crypto_key() {
+            Some(vault_key) => {
+                let (vault_id, _) = crate::sync::derive_encrypted_sync_identity(&vault_key);
+                (
+                    crate::sync::SyncConfig {
+                        server_url,
+                        vault_id: HEXLOWER.encode(&vault_id),
+                        key: None,
+                    },
+                    None,
+                )
+            }
+            None => {
+                let mut vault_id = [0u8; 16];
+                let mut key = [0u8; 32];
+                getrandom::fill(&mut vault_id).map_err(err)?;
+                getrandom::fill(&mut key).map_err(err)?;
+                (
+                    crate::sync::SyncConfig {
+                        server_url,
+                        vault_id: HEXLOWER.encode(&vault_id),
+                        key: Some(HEXLOWER.encode(&key)),
+                    },
+                    Some(crate::sync::sync_code(vault_id, &key)),
+                )
+            }
+        }
+    };
+
+    state.with_engine(|engine| crate::sync::save_config(engine.vault(), &config).map_err(err))?;
+    start_sync(&app, &state, &config)?;
+    Ok(SyncEnabled { code })
+}
+
+/// Join an existing synced vault using a pairing code (plaintext vaults).
+#[tauri::command]
+pub fn sync_join(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_url: String,
+    code: String,
+) -> CmdResult<()> {
+    use data_encoding::HEXLOWER;
+
+    let (vault_id, key) = crate::sync::parse_sync_code(&code).map_err(err)?;
+    let config = crate::sync::SyncConfig {
+        server_url,
+        vault_id: HEXLOWER.encode(&vault_id),
+        key: Some(HEXLOWER.encode(&key)),
+    };
+    state.with_engine(|engine| crate::sync::save_config(engine.vault(), &config).map_err(err))?;
+    start_sync(&app, &state, &config)
+}
+
+#[tauri::command]
+pub fn sync_status(state: State<'_, AppState>) -> crate::state::SyncStatusInfo {
+    state.sync_status.lock().clone()
 }

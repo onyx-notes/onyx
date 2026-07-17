@@ -54,6 +54,17 @@ export interface ObsidianImport {
   imported: string[];
 }
 
+export interface SyncStatus {
+  enabled: boolean;
+  state: string;
+  lastError: string | null;
+  lastSyncedEpochSecs: number | null;
+}
+
+export interface SyncEnabled {
+  code: string | null;
+}
+
 export const api = {
   vaultStatus: (path: string) => invoke<string>("vault_status", { path }),
   openVault: (path: string, passphrase?: string) =>
@@ -83,6 +94,11 @@ export const api = {
   importObsidianSettings: () =>
     invoke<ObsidianImport>("import_obsidian_settings"),
   dailyNote: (date: string) => invoke<string>("daily_note", { date }),
+  syncEnable: (serverUrl: string) =>
+    invoke<SyncEnabled>("sync_enable", { serverUrl }),
+  syncJoin: (serverUrl: string, code: string) =>
+    invoke<void>("sync_join", { serverUrl, code }),
+  syncStatus: () => invoke<SyncStatus>("sync_status"),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
     listen<VaultEvent>("onyx://vault-event", (event) => handler(event.payload)),

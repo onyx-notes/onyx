@@ -28,6 +28,7 @@ onyx-core = { path = "crates/onyx-core" }
 onyx-proto = { path = "crates/onyx-proto" }
 onyx-sync = { path = "crates/onyx-sync" }
 onyx-testkit = { path = "crates/onyx-testkit" }
+onyx-server = { path = "onyx-server" }
 
 # serialization
 serde = { version = "1", features = ["derive"] }
@@ -74,6 +75,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 tower = "0.5"
 http-body-util = "0.1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 # errors / logging
 thiserror = "2"

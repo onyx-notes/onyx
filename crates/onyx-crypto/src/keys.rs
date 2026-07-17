@@ -26,7 +26,7 @@ impl VaultKey {
     /// Derive a 32-byte subkey for a labeled purpose. Uses BLAKE3's
     /// derive-key mode: `context` must be a hardcoded, globally unique
     /// string per RFC-style domain separation.
-    pub(crate) fn derive(&self, context: &str, material: &[u8]) -> [u8; 32] {
+    pub fn derive(&self, context: &str, material: &[u8]) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new_derive_key(context);
         hasher.update(&self.0);
         hasher.update(material);

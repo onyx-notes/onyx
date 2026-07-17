@@ -18,19 +18,35 @@ pub const VAULT_EVENT: &str = "onyx://vault-event";
 /// Debounce for tantivy commits after the last change.
 const SEARCH_COMMIT_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// Sync agent status, surfaced to the UI.
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusInfo {
+    pub enabled: bool,
+    /// "idle" | "syncing" | "error".
+    pub state: String,
+    pub last_error: Option<String>,
+    pub last_synced_epoch_secs: Option<u64>,
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub engine: Arc<Mutex<Option<Engine>>>,
     /// Kept alive here; dropped (and its thread stopped) on vault switch.
     watcher: Mutex<Option<VaultWatcher>>,
+    /// Dropping the sender stops the sync agent loop.
+    sync_stop: Mutex<Option<crossbeam_channel::Sender<()>>>,
+    pub sync_status: Arc<Mutex<SyncStatusInfo>>,
 }
 
 impl AppState {
-    /// Close the current vault: watcher stops, engine drops (vault keys
-    /// zeroize on drop).
+    /// Close the current vault: sync agent and watcher stop, engine drops
+    /// (vault keys zeroize on drop).
     pub fn lock_vault(&self) {
+        *self.sync_stop.lock() = None;
         *self.watcher.lock() = None;
         *self.engine.lock() = None;
+        *self.sync_status.lock() = SyncStatusInfo::default();
     }
 }
 
@@ -135,4 +151,85 @@ pub fn spawn_watcher(
         .map_err(|error| onyx_core::VaultError::Watcher(error.to_string()))?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Sync agent
+// ---------------------------------------------------------------------------
+
+/// Base interval between sync cycles. (The WebSocket live-push lane will
+/// replace most of these polls later.)
+const SYNC_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Start the background sync agent for the open vault, replacing any
+/// previous agent.
+pub fn spawn_sync_agent(
+    app: &AppHandle,
+    state: &AppState,
+    mut client: crate::sync::SyncClient,
+    vault_id: [u8; 16],
+) {
+    let (stop_sender, stop_receiver) = crossbeam_channel::bounded::<()>(0);
+    *state.sync_stop.lock() = Some(stop_sender);
+    {
+        let mut status = state.sync_status.lock();
+        status.enabled = true;
+        status.state = "syncing".into();
+    }
+
+    let engine = Arc::clone(&state.engine);
+    let status = Arc::clone(&state.sync_status);
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("onyx-sync-agent".into())
+        .spawn(move || {
+            // Join once (idempotent); failures surface as status and retry.
+            loop {
+                match client.join(vault_id) {
+                    Ok(()) => break,
+                    Err(error) => {
+                        let mut info = status.lock();
+                        info.state = "error".into();
+                        info.last_error = Some(error.to_string());
+                        drop(info);
+                        match stop_receiver.recv_timeout(SYNC_INTERVAL) {
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                            _ => return,
+                        }
+                    }
+                }
+            }
+
+            loop {
+                match crate::sync::sync_cycle(&engine, &mut client, vault_id) {
+                    Ok(changed) => {
+                        let mut info = status.lock();
+                        info.state = "idle".into();
+                        info.last_error = None;
+                        info.last_synced_epoch_secs = Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        );
+                        drop(info);
+                        for path in changed {
+                            let _ = app.emit(VAULT_EVENT, FrontendEvent::Modified { path });
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "sync cycle failed");
+                        client.reset_auth(); // token may be stale (server restart)
+                        let mut info = status.lock();
+                        info.state = "error".into();
+                        info.last_error = Some(error.to_string());
+                    }
+                }
+                match stop_receiver.recv_timeout(SYNC_INTERVAL) {
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    // Stopped (or state dropped): agent is done.
+                    _ => return,
+                }
+            }
+        });
 }

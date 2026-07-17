@@ -94,6 +94,8 @@ pub struct NoteRecord {
     pub is_markdown: bool,
     pub size: u64,
     pub word_count: Option<u64>,
+    /// blake3 of the file content at index time (change detection for sync).
+    pub hash: [u8; 32],
 }
 
 /// One backlink occurrence: who links here, and where in their text.
@@ -418,7 +420,7 @@ impl Store {
     pub fn note(&self, id: NoteId) -> Result<Option<NoteRecord>, IndexError> {
         self.conn
             .query_row(
-                "SELECT id, path, title, is_markdown, size, word_count
+                "SELECT id, path, title, is_markdown, size, word_count, hash
                  FROM notes WHERE id = ?1",
                 params![id.as_bytes()],
                 note_record_from_row,
@@ -429,7 +431,7 @@ impl Store {
 
     pub fn all_notes(&self) -> Result<Vec<NoteRecord>, IndexError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, path, title, is_markdown, size, word_count
+            "SELECT id, path, title, is_markdown, size, word_count, hash
              FROM notes ORDER BY path_key",
         )?;
         let rows = statement
@@ -704,6 +706,7 @@ fn note_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord>
         is_markdown: row.get::<_, i64>(3)? != 0,
         size: row.get::<_, i64>(4)? as u64,
         word_count: row.get::<_, Option<i64>>(5)?.map(|words| words as u64),
+        hash: row.get::<_, Vec<u8>>(6)?.try_into().unwrap_or([0; 32]),
     })
 }
 

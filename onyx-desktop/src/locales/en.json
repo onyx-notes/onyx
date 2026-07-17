@@ -46,5 +46,13 @@
   "vault.confirmPassphrasePrompt": "Confirm the passphrase:",
   "vault.passphraseMismatch": "Passphrases did not match",
   "vault.lock": "Lock vault",
-  "vault.locked": "Vault locked"
+  "vault.locked": "Vault locked",
+  "sync.serverUrl": "Sync server URL",
+  "sync.code": "Pairing code (join)",
+  "sync.enable": "Enable sync",
+  "sync.join": "Join existing",
+  "sync.enabledEncrypted": "Sync enabled. Unlock this vault on another device with the same passphrase and keyfile to pair.",
+  "sync.enabledCode": "Sync enabled. Pair other devices with this code: {code}",
+  "sync.joined": "Joined synced vault. First sync starts shortly.",
+  "sync.statusTitle": "Sync status"
 }

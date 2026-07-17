@@ -86,6 +86,28 @@ impl SyncDoc {
             .map_err(|error| SyncError::Corrupt(error.to_string()))?;
         Ok(())
     }
+
+    /// Record the vault path inside the document (a `meta` map container).
+    /// This is how a brand-new note arriving from a remote device knows
+    /// where to materialize — the path travels with the CRDT.
+    pub fn set_path(&self, path: &str) -> Result<(), SyncError> {
+        self.doc
+            .get_map("meta")
+            .insert("path", path)
+            .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// The vault path recorded in the document, if any.
+    pub fn path(&self) -> Option<String> {
+        match self.doc.get_map("meta").get("path") {
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::String(path))) => {
+                Some(path.to_string())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -182,5 +204,24 @@ mod tests {
         let doc = SyncDoc::new(1);
         assert!(doc.import(b"garbage bytes").is_err());
         assert!(SyncDoc::from_snapshot(1, b"nope").is_err());
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn path_travels_with_the_doc() {
+        let a = SyncDoc::from_text(1, "content").unwrap();
+        assert_eq!(a.path(), None);
+        a.set_path("folder/Note.md").unwrap();
+        assert_eq!(a.path().as_deref(), Some("folder/Note.md"));
+
+        // A fresh device importing the update learns the path.
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+        assert_eq!(b.path().as_deref(), Some("folder/Note.md"));
+        assert_eq!(b.text(), "content");
     }
 }

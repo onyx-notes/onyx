@@ -16,9 +16,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { workspace = true }
 
 [dependencies]
+blake3 = { workspace = true }
 crossbeam-channel = { workspace = true }
 onyx-core = { workspace = true }
 onyx-crypto = { workspace = true }
+onyx-proto = { workspace = true }
+onyx-sync = { workspace = true }
+reqwest = { workspace = true }
+data-encoding = { workspace = true }
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
 onyx-md = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
@@ -29,4 +36,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
+onyx-server = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true }

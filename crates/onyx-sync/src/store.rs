@@ -15,7 +15,8 @@ const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS docs (
     note_id           BLOB PRIMARY KEY,
     snapshot          BLOB NOT NULL,
-    materialized_hash BLOB NOT NULL
+    materialized_hash BLOB NOT NULL,
+    pushed_version    BLOB NOT NULL DEFAULT x''
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -99,6 +100,57 @@ impl SyncStore {
             .conn
             .query_row("SELECT COUNT(*) FROM docs", [], |row| row.get(0))?;
         Ok(count as usize)
+    }
+
+    /// The stored materialized-content hash for a doc, without loading the
+    /// snapshot (cheap change detection against the index's hashes).
+    pub fn materialized_hash(&self, note_id: [u8; 16]) -> Result<Option<[u8; 32]>, SyncError> {
+        let row: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT materialized_hash FROM docs WHERE note_id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(row.and_then(|bytes| bytes.try_into().ok()))
+    }
+
+    /// The version vector last successfully pushed for a doc (empty =
+    /// never pushed).
+    pub fn pushed_version(&self, note_id: [u8; 16]) -> Result<Vec<u8>, SyncError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT pushed_version FROM docs WHERE note_id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_default())
+    }
+
+    pub fn set_pushed_version(
+        &mut self,
+        note_id: [u8; 16],
+        version: &[u8],
+    ) -> Result<(), SyncError> {
+        self.conn.execute(
+            "UPDATE docs SET pushed_version = ?2 WHERE note_id = ?1",
+            params![note_id, version],
+        )?;
+        Ok(())
+    }
+
+    /// Docs whose current state differs from what was last pushed — the
+    /// outbox. (Cheap: compares stored version bytes, no doc loading.)
+    pub fn all_doc_ids(&self) -> Result<Vec<[u8; 16]>, SyncError> {
+        let mut statement = self.conn.prepare("SELECT note_id FROM docs")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .filter_map(|result| result.ok().and_then(|bytes| bytes.try_into().ok()))
+            .collect();
+        Ok(ids)
     }
 
     /// Opaque metadata slot (device id, server cursor, keys of that shape).

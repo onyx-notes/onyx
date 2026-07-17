@@ -37,6 +37,12 @@ impl CryptoFs {
         Self { inner, key }
     }
 
+    /// The vault key (sync reuses it for op encryption — one secret per
+    /// encrypted vault).
+    pub fn vault_key(&self) -> &VaultKey {
+        &self.key
+    }
+
     /// Plaintext vault path → ciphertext storage path.
     fn seal_path(&self, path: &NotePath) -> Result<NotePath, io::Error> {
         if path.is_hidden() {

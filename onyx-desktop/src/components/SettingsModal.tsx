@@ -14,6 +14,31 @@ export default function SettingsModal(props: {
 }) {
   const [draft, setDraft] = createSignal<Settings>({ ...props.settings });
   const [importedKeys, setImportedKeys] = createSignal<string[] | null>(null);
+  const [syncUrl, setSyncUrl] = createSignal("");
+  const [syncCodeInput, setSyncCodeInput] = createSignal("");
+  const [syncResult, setSyncResult] = createSignal<string | null>(null);
+
+  const enableSync = async () => {
+    try {
+      const result = await api.syncEnable(syncUrl().trim());
+      setSyncResult(
+        result.code === null
+          ? t("sync.enabledEncrypted")
+          : t("sync.enabledCode", { code: result.code }),
+      );
+    } catch (error) {
+      setSyncResult(String(error));
+    }
+  };
+
+  const joinSync = async () => {
+    try {
+      await api.syncJoin(syncUrl().trim(), syncCodeInput().trim());
+      setSyncResult(t("sync.joined"));
+    } catch (error) {
+      setSyncResult(String(error));
+    }
+  };
 
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -87,6 +112,37 @@ export default function SettingsModal(props: {
               }
             />
           </label>
+
+          <div class="settings-import">
+            <div class="settings-row">
+              <span>{t("sync.serverUrl")}</span>
+              <input
+                type="text"
+                placeholder="https://sync.example.com"
+                value={syncUrl()}
+                onInput={(event) => setSyncUrl(event.currentTarget.value)}
+              />
+            </div>
+            <div class="settings-row">
+              <span>{t("sync.code")}</span>
+              <input
+                type="text"
+                value={syncCodeInput()}
+                onInput={(event) => setSyncCodeInput(event.currentTarget.value)}
+              />
+            </div>
+            <div class="settings-row">
+              <button class="settings-button" onClick={() => void enableSync()}>
+                {t("sync.enable")}
+              </button>
+              <button class="settings-button" onClick={() => void joinSync()}>
+                {t("sync.join")}
+              </button>
+            </div>
+            <Show when={syncResult()}>
+              {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+          </div>
 
           <div class="settings-import">
             <button class="settings-button" onClick={() => void runImport()}>
