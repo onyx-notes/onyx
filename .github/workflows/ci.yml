@@ -10,6 +10,11 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Portable crates on every OS: the vault engine, crypto, sync, protocol,
+  # markdown, and server are pure Rust with no Tauri/webview dependency, so
+  # they lint and test identically everywhere. The Tauri desktop app and its
+  # native plugin are excluded here and covered by the `desktop` job (they
+  # need platform webview toolchains).
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -26,9 +31,36 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude onyx-desktop --exclude tauri-plugin-onyx-secrets --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude onyx-desktop --exclude tauri-plugin-onyx-secrets
+
+  # The Tauri desktop app (lint + integration tests, incl. sync_e2e and the
+  # flaky-network harness) on Linux, where the GTK/WebKit toolchain is set up.
+  desktop:
+    name: desktop (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install desktop system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            pkg-config
+      - name: Clippy (desktop)
+        run: cargo clippy -p onyx-desktop -p tauri-plugin-onyx-secrets --all-targets -- -D warnings
+      - name: Test (desktop)
+        run: cargo test -p onyx-desktop -p tauri-plugin-onyx-secrets
 
   deny:
     name: licenses & advisories
