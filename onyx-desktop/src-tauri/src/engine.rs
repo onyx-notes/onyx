@@ -46,6 +46,10 @@ pub enum EngineError {
     Sync(#[from] onyx_sync::SyncError),
     #[error("sync is not enabled for this vault")]
     SyncDisabled,
+    #[error("{0}")]
+    History(#[from] onyx_core::HistoryError),
+    #[error("version not found")]
+    VersionNotFound,
 }
 
 /// Is the directory an encrypted Onyx vault?
@@ -176,6 +180,8 @@ pub struct Engine {
     crypto: Option<Arc<CryptoFs>>,
     /// Present when sync is enabled for this vault.
     sync: Option<SyncState>,
+    /// Per-note version history (the time machine).
+    history: onyx_core::History,
     /// Search commits are debounced by the caller; this tracks dirtiness.
     search_dirty: bool,
 }
@@ -235,6 +241,11 @@ impl Engine {
         let vault = Vault::new(fs, VaultConfig::default());
         index.reconcile(&vault)?;
 
+        // History mirrors the vault's privacy: encrypted vaults encrypt
+        // snapshots with the same key.
+        let history_key = crypto.as_ref().map(|crypto| crypto.vault_key().clone());
+        let history = onyx_core::History::open(&root.join(".onyx/history.db"), history_key)?;
+
         let mut quick = QuickSwitcher::new();
         for record in index.all_notes()? {
             quick.upsert(record.id, &record.title, record.path.as_str(), &[]);
@@ -253,6 +264,7 @@ impl Engine {
             quick,
             crypto,
             sync: None,
+            history,
             search_dirty: false,
         })
     }
@@ -288,6 +300,21 @@ impl Engine {
 
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    pub fn history(&self) -> &onyx_core::History {
+        &self.history
+    }
+
+    /// Restore a note to a past version: writes it back (which itself
+    /// records a new snapshot, so restore is undoable too).
+    pub fn restore_version(&mut self, path: &NotePath, created_ms: u64) -> Result<(), EngineError> {
+        let id = self.vault.note_id(path);
+        let content = self
+            .history
+            .get(id, created_ms)?
+            .ok_or(EngineError::VersionNotFound)?;
+        self.write_note(path, &content)
     }
 
     pub fn quick(&self) -> &QuickSwitcher {
@@ -1036,6 +1063,11 @@ impl Engine {
     pub fn write_note(&mut self, path: &NotePath, content: &str) -> Result<(), EngineError> {
         let existed = self.vault.fs().exists(path);
         self.vault.write(path, content.as_bytes())?;
+        if path.is_markdown() {
+            let _ = self
+                .history
+                .record(self.vault.note_id(path), content.as_bytes());
+        }
         let event = if existed {
             VaultEvent::Modified(path.clone())
         } else {
