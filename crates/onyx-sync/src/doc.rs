@@ -108,6 +108,45 @@ impl SyncDoc {
             _ => None,
         }
     }
+
+    // ------------------------------------------------------------------
+    // Manifest use (the per-vault tombstone document)
+    //
+    // The vault manifest is a SyncDoc whose `files` map holds per-doc
+    // liveness: key = hex doc id, value = bool. Loro maps are LWW per key,
+    // which is exactly the delete/resurrect semantics the plan calls for.
+    // ------------------------------------------------------------------
+
+    /// Mark a document live (`true`) or tombstoned (`false`).
+    pub fn set_live(&self, doc_id_hex: &str, live: bool) -> Result<(), SyncError> {
+        self.doc
+            .get_map("files")
+            .insert(doc_id_hex, live)
+            .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// Liveness of one document; `None` = never mentioned (implicitly live).
+    pub fn is_live(&self, doc_id_hex: &str) -> Option<bool> {
+        match self.doc.get_map("files").get(doc_id_hex) {
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::Bool(live))) => Some(live),
+            _ => None,
+        }
+    }
+
+    /// All liveness entries (hex doc id → live).
+    pub fn liveness(&self) -> Vec<(String, bool)> {
+        let mut entries = Vec::new();
+        if let loro::LoroValue::Map(map) = self.doc.get_map("files").get_value() {
+            for (key, value) in map.iter() {
+                if let loro::LoroValue::Bool(live) = value {
+                    entries.push((key.clone(), *live));
+                }
+            }
+        }
+        entries
+    }
 }
 
 #[cfg(test)]
@@ -223,5 +262,38 @@ mod path_tests {
         b.import(&a.export_from(&[]).unwrap()).unwrap();
         assert_eq!(b.path().as_deref(), Some("folder/Note.md"));
         assert_eq!(b.text(), "content");
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_roundtrip_and_merge() {
+        let a = SyncDoc::new(1);
+        a.set_live("aa11", false).unwrap();
+        a.set_live("bb22", true).unwrap();
+        assert_eq!(a.is_live("aa11"), Some(false));
+        assert_eq!(a.is_live("bb22"), Some(true));
+        assert_eq!(a.is_live("unknown"), None);
+
+        // Merge to another device.
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+        assert_eq!(b.is_live("aa11"), Some(false));
+
+        // Concurrent tombstone (A) vs resurrect (B) on the same key:
+        // LWW picks one winner and BOTH sides agree on it.
+        a.set_live("cc33", false).unwrap();
+        b.set_live("cc33", true).unwrap();
+        let a_to_b = a.export_from(&b.version()).unwrap();
+        let b_to_a = b.export_from(&a.version()).unwrap();
+        a.import(&b_to_a).unwrap();
+        b.import(&a_to_b).unwrap();
+        assert_eq!(a.is_live("cc33"), b.is_live("cc33"));
+
+        let entries = a.liveness();
+        assert_eq!(entries.len(), 3);
     }
 }

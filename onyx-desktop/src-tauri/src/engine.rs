@@ -54,12 +54,30 @@ pub fn is_encrypted(root: &Path) -> bool {
 }
 
 /// Per-vault sync state: the sidecar store, the op-encryption key, this
-/// device's CRDT peer id, and an in-memory doc cache.
+/// device's CRDT peer id, an in-memory doc cache, and the vault manifest
+/// (per-doc liveness — the tombstone ledger).
 pub struct SyncState {
     store: onyx_sync::SyncStore,
     key: VaultKey,
     peer: u64,
     docs: std::collections::HashMap<[u8; 16], onyx_sync::SyncDoc>,
+    manifest: Option<onyx_sync::SyncDoc>,
+    manifest_dirty: bool,
+}
+
+fn hex16(id: &[u8; 16]) -> String {
+    id.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex16(hex: &str) -> Option<[u8; 16]> {
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut id = [0u8; 16];
+    for (index, byte) in id.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(id)
 }
 
 impl SyncState {
@@ -69,7 +87,44 @@ impl SyncState {
             key,
             peer,
             docs: std::collections::HashMap::new(),
+            manifest: None,
+            manifest_dirty: false,
         }
+    }
+
+    fn ensure_manifest(&mut self) -> Result<&onyx_sync::SyncDoc, onyx_sync::SyncError> {
+        if self.manifest.is_none() {
+            let doc = match self.store.load_doc(onyx_sync::MANIFEST_DOC_ID, self.peer)? {
+                Some((doc, _)) => doc,
+                None => onyx_sync::SyncDoc::new(self.peer),
+            };
+            self.manifest = Some(doc);
+        }
+        Ok(self.manifest.as_ref().expect("just ensured"))
+    }
+
+    fn manifest_live(&mut self, id: &[u8; 16]) -> Result<Option<bool>, onyx_sync::SyncError> {
+        let hex = hex16(id);
+        Ok(self.ensure_manifest()?.is_live(&hex))
+    }
+
+    fn manifest_set_live(&mut self, id: &[u8; 16], live: bool) -> Result<(), onyx_sync::SyncError> {
+        let hex = hex16(id);
+        self.ensure_manifest()?.set_live(&hex, live)?;
+        self.manifest_dirty = true;
+        Ok(())
+    }
+
+    fn save_manifest_if_dirty(&mut self) -> Result<(), onyx_sync::SyncError> {
+        if self.manifest_dirty {
+            if let Some(manifest) = &self.manifest {
+                // The manifest has no file; its materialized hash is unused.
+                self.store
+                    .save_doc(onyx_sync::MANIFEST_DOC_ID, manifest, [0; 32])?;
+            }
+            self.manifest_dirty = false;
+        }
+        Ok(())
     }
 }
 
@@ -353,11 +408,69 @@ impl Engine {
             };
             doc.set_text(&content)?;
             sync.store.save_doc(doc_id, doc, content_hash)?;
+            // Recreating a tombstoned path resurrects it everywhere.
+            if sync.manifest_live(&doc_id)? == Some(false) {
+                sync.manifest_set_live(&doc_id, true)?;
+            }
         }
 
-        // 2. Export everything not yet pushed.
+        // 2. Tombstone scan: a doc whose file vanished was deleted locally.
+        for doc_id in sync.store.all_doc_ids()? {
+            if doc_id == onyx_sync::MANIFEST_DOC_ID || sync.manifest_live(&doc_id)? == Some(false) {
+                continue;
+            }
+            let path_text = {
+                let doc = match sync.docs.entry(doc_id) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                            continue;
+                        };
+                        entry.insert(doc)
+                    }
+                };
+                doc.path()
+            };
+            let Some(path_text) = path_text else { continue };
+            let Ok(note_path) = NotePath::new(&path_text) else {
+                continue;
+            };
+            if !self.vault.fs().exists(&note_path) {
+                sync.manifest_set_live(&doc_id, false)?;
+            }
+        }
+        // Persist manifest changes so they export in this same cycle.
+        sync.save_manifest_if_dirty()?;
+
+        // 3. Export everything not yet pushed (tombstoned note docs are
+        // skipped — the tombstone itself travels via the manifest doc).
         let mut pushes = Vec::new();
         for doc_id in sync.store.all_doc_ids()? {
+            // The manifest lives in its own slot, never the doc cache
+            // (two live copies of one CRDT would silently diverge).
+            if doc_id == onyx_sync::MANIFEST_DOC_ID {
+                let pushed = sync.store.pushed_version(doc_id)?;
+                let exported = {
+                    let manifest = sync.ensure_manifest()?;
+                    let current = manifest.version();
+                    if current != pushed {
+                        Some((current, manifest.export_from(&pushed)?))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((current, update)) = exported {
+                    pushes.push(PendingPush {
+                        doc_id,
+                        ciphertext: onyx_crypto::encrypt(&sync.key, &update),
+                        version: current,
+                    });
+                }
+                continue;
+            }
+            if sync.manifest_live(&doc_id)? == Some(false) {
+                continue;
+            }
             let doc = match sync.docs.entry(doc_id) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => {
@@ -409,6 +522,97 @@ impl Engine {
                 continue;
             };
 
+            // Manifest ops: merge, then act on liveness transitions.
+            if op.doc_id == onyx_sync::MANIFEST_DOC_ID {
+                let transitions = {
+                    let manifest = sync.ensure_manifest()?;
+                    let before: std::collections::HashMap<String, bool> =
+                        manifest.liveness().into_iter().collect();
+                    if manifest.import(&update).is_err() {
+                        tracing::warn!(seq = op.seq, "malformed manifest update skipped");
+                        continue;
+                    }
+                    manifest
+                        .liveness()
+                        .into_iter()
+                        .filter(|(key, live)| before.get(key) != Some(live))
+                        .collect::<Vec<_>>()
+                };
+                sync.manifest_dirty = true;
+
+                for (hex, live) in transitions {
+                    let Some(doc_id) = decode_hex16(&hex) else {
+                        continue;
+                    };
+                    let path_text = match sync.docs.entry(doc_id) {
+                        Entry::Occupied(entry) => entry.into_mut().path(),
+                        Entry::Vacant(entry) => {
+                            match sync.store.load_doc(doc_id, sync.peer)? {
+                                Some((doc, _)) => entry.insert(doc).path(),
+                                None => None, // doc unknown yet — its ops will follow
+                            }
+                        }
+                    };
+                    let Some(path_text) = path_text else { continue };
+                    let Ok(note_path) = NotePath::new(&path_text) else {
+                        continue;
+                    };
+
+                    if !live {
+                        // Remote delete: honor it only if the local file has
+                        // no un-synced edits; otherwise resurrect (edits win
+                        // over deletes, per plan).
+                        let Ok(file_content) = self.vault.read_text(&note_path) else {
+                            continue; // already gone locally
+                        };
+                        let file_hash = *blake3::hash(file_content.as_bytes()).as_bytes();
+                        if sync.store.materialized_hash(doc_id)? == Some(file_hash) {
+                            self.vault.remove(&note_path)?;
+                            self.index.handle_event(
+                                &self.vault,
+                                &VaultEvent::Removed(note_path.clone()),
+                            )?;
+                            let id = self.vault.note_id(&note_path);
+                            self.quick.remove(id);
+                            self.search.remove(id)?;
+                            self.search_dirty = true;
+                            changed_paths.push(path_text);
+                        } else {
+                            sync.manifest_set_live(&doc_id, true)?;
+                        }
+                    } else if !self.vault.fs().exists(&note_path) {
+                        // Remote resurrect: rematerialize from doc state.
+                        let text = match sync.docs.get(&doc_id) {
+                            Some(doc) => doc.text(),
+                            None => continue,
+                        };
+                        self.vault.write(&note_path, text.as_bytes())?;
+                        self.index
+                            .handle_event(&self.vault, &VaultEvent::Created(note_path.clone()))?;
+                        let id = self.vault.note_id(&note_path);
+                        if let Some(record) = self.index.note(id)? {
+                            self.quick
+                                .upsert(id, &record.title, record.path.as_str(), &[]);
+                            self.search.upsert(
+                                id,
+                                record.path.as_str(),
+                                &record.title,
+                                &text,
+                                &[],
+                            )?;
+                            self.search_dirty = true;
+                        }
+                        sync.store.save_doc(
+                            doc_id,
+                            sync.docs.get(&doc_id).expect("checked above"),
+                            *blake3::hash(text.as_bytes()).as_bytes(),
+                        )?;
+                        changed_paths.push(path_text);
+                    }
+                }
+                continue;
+            }
+
             let doc = match sync.docs.entry(op.doc_id) {
                 Entry::Occupied(entry) => entry.into_mut(),
                 Entry::Vacant(entry) => {
@@ -450,8 +654,17 @@ impl Engine {
 
             let merged = doc.text();
             let merged_hash = *blake3::hash(merged.as_bytes()).as_bytes();
-            let on_disk = self.vault.read_text(&note_path).ok();
 
+            // Tombstoned docs update state only — no file materializes.
+            // (doc's borrow of the cache ends here; it is re-fetched below.)
+            let dead = sync.manifest_live(&op.doc_id)? == Some(false);
+            if dead {
+                let doc = sync.docs.get(&op.doc_id).expect("cached above");
+                sync.store.save_doc(op.doc_id, doc, merged_hash)?;
+                continue;
+            }
+
+            let on_disk = self.vault.read_text(&note_path).ok();
             if on_disk.as_deref() != Some(merged.as_str()) {
                 self.vault.write(&note_path, merged.as_bytes())?;
                 self.index
@@ -466,8 +679,10 @@ impl Engine {
                 }
                 changed_paths.push(path_text);
             }
+            let doc = sync.docs.get(&op.doc_id).expect("cached above");
             sync.store.save_doc(op.doc_id, doc, merged_hash)?;
         }
+        sync.save_manifest_if_dirty()?;
         Ok(changed_paths)
     }
 
@@ -841,6 +1056,114 @@ mod sync_tests {
         let changed = engine.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
         assert!(changed.is_empty());
         assert!(engine.sync_collect().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deletes_propagate_between_engines() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("doomed.md"), "delete me").unwrap();
+        std::fs::write(dir_a.path().join("keeper.md"), "keep me").unwrap();
+
+        let mut a = sync_engine(dir_a.path(), 1);
+        let mut b = sync_engine(dir_b.path(), 2);
+
+        // Initial replication A → B.
+        let pushes = a.sync_collect().unwrap();
+        b.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
+        a.sync_mark_pushed(&pushes).unwrap();
+        let b_ack = b.sync_collect().unwrap();
+        b.sync_mark_pushed(&b_ack).unwrap();
+        assert!(dir_b.path().join("doomed.md").exists());
+
+        // A deletes the note (through the engine, like the UI does).
+        a.write_note(&note("dummy-touch.md"), "x").unwrap(); // unrelated churn
+        a.delete_note(&note("doomed.md")).unwrap();
+
+        // A's next collect tombstones it; B applies and the file dies.
+        let pushes = a.sync_collect().unwrap();
+        let changed = b.sync_apply_remote(&as_stored(&pushes, 100)).unwrap();
+        a.sync_mark_pushed(&pushes).unwrap();
+        assert!(changed.contains(&"doomed.md".to_owned()));
+        assert!(!dir_b.path().join("doomed.md").exists());
+        assert!(dir_b.path().join("keeper.md").exists());
+        // …and it's gone from B's index too.
+        let gone_id = b.vault().note_id(&note("doomed.md"));
+        assert!(b.index().note(gone_id).unwrap().is_none());
+
+        // The delete does NOT boomerang back to resurrect on A.
+        let from_b = b.sync_collect().unwrap();
+        let changed_a = a.sync_apply_remote(&as_stored(&from_b, 200)).unwrap();
+        b.sync_mark_pushed(&from_b).unwrap();
+        assert!(!changed_a.contains(&"doomed.md".to_owned()));
+        assert!(!dir_a.path().join("doomed.md").exists());
+    }
+
+    #[test]
+    fn concurrent_edit_beats_delete() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("contested.md"), "original").unwrap();
+
+        let mut a = sync_engine(dir_a.path(), 1);
+        let mut b = sync_engine(dir_b.path(), 2);
+        let pushes = a.sync_collect().unwrap();
+        b.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
+        a.sync_mark_pushed(&pushes).unwrap();
+        let b_ack = b.sync_collect().unwrap();
+        b.sync_mark_pushed(&b_ack).unwrap();
+
+        // Concurrently: A deletes, B edits.
+        a.delete_note(&note("contested.md")).unwrap();
+        b.write_note(&note("contested.md"), "original plus B's edit")
+            .unwrap();
+
+        // A's tombstone reaches B — but B has un-synced local edits, so B
+        // resurrects instead of deleting.
+        let from_a = a.sync_collect().unwrap();
+        b.sync_apply_remote(&as_stored(&from_a, 100)).unwrap();
+        a.sync_mark_pushed(&from_a).unwrap();
+        assert!(dir_b.path().join("contested.md").exists());
+
+        // B's resurrection + content flows back to A: the file returns.
+        let from_b = b.sync_collect().unwrap();
+        let changed_a = a.sync_apply_remote(&as_stored(&from_b, 200)).unwrap();
+        b.sync_mark_pushed(&from_b).unwrap();
+        assert!(changed_a.contains(&"contested.md".to_owned()));
+        assert_eq!(
+            std::fs::read_to_string(dir_a.path().join("contested.md")).unwrap(),
+            "original plus B's edit"
+        );
+    }
+
+    #[test]
+    fn delete_then_recreate_resurrects() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(dir_a.path().join("phoenix.md"), "first life").unwrap();
+
+        let mut a = sync_engine(dir_a.path(), 1);
+        let mut b = sync_engine(dir_b.path(), 2);
+        let pushes = a.sync_collect().unwrap();
+        b.sync_apply_remote(&as_stored(&pushes, 1)).unwrap();
+        a.sync_mark_pushed(&pushes).unwrap();
+
+        // Delete, sync the tombstone over, then recreate on A.
+        a.delete_note(&note("phoenix.md")).unwrap();
+        let from_a = a.sync_collect().unwrap();
+        b.sync_apply_remote(&as_stored(&from_a, 100)).unwrap();
+        a.sync_mark_pushed(&from_a).unwrap();
+        assert!(!dir_b.path().join("phoenix.md").exists());
+
+        a.write_note(&note("phoenix.md"), "second life").unwrap();
+        let from_a = a.sync_collect().unwrap();
+        let changed = b.sync_apply_remote(&as_stored(&from_a, 200)).unwrap();
+        a.sync_mark_pushed(&from_a).unwrap();
+        assert!(changed.contains(&"phoenix.md".to_owned()));
+        assert_eq!(
+            std::fs::read_to_string(dir_b.path().join("phoenix.md")).unwrap(),
+            "second life"
+        );
     }
 
     #[test]

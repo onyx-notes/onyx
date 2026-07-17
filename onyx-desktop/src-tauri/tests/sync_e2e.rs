@@ -153,9 +153,30 @@ fn two_devices_full_stack_sync() {
     assert_eq!(alice.read("new-from-bob.md"), "fresh note\n");
 
     // And it's fully live on Alice: indexed and searchable.
-    let mut guard = alice.engine.lock();
-    let engine = guard.as_mut().unwrap();
-    engine.commit_search_if_dirty().unwrap();
-    assert_eq!(engine.index().note_count().unwrap(), 2);
-    assert_eq!(engine.search("fresh", 5).unwrap().len(), 1);
+    {
+        let mut guard = alice.engine.lock();
+        let engine = guard.as_mut().unwrap();
+        engine.commit_search_if_dirty().unwrap();
+        assert_eq!(engine.index().note_count().unwrap(), 2);
+        assert_eq!(engine.search("fresh", 5).unwrap().len(), 1);
+    }
+
+    // Deletes propagate: Bob deletes his note, it disappears from Alice.
+    {
+        let mut guard = bob.engine.lock();
+        guard
+            .as_mut()
+            .unwrap()
+            .delete_note(&onyx_core::NotePath::new("new-from-bob.md").unwrap())
+            .unwrap();
+    }
+    bob.cycle(vault_id);
+    let changed = alice.cycle(vault_id);
+    assert!(changed.contains(&"new-from-bob.md".to_owned()));
+    assert!(!alice.vault_path().join("new-from-bob.md").exists());
+    {
+        let mut guard = alice.engine.lock();
+        let engine = guard.as_mut().unwrap();
+        assert_eq!(engine.index().note_count().unwrap(), 1);
+    }
 }

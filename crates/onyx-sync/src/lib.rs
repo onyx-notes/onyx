@@ -17,6 +17,11 @@ mod doc;
 mod store;
 
 pub use doc::SyncDoc;
+
+/// Reserved doc id for the per-vault manifest (tombstones / liveness).
+/// Real note ids are blake3 outputs; the all-zero id cannot collide in
+/// practice and is filtered from note-doc iteration.
+pub const MANIFEST_DOC_ID: [u8; 16] = [0; 16];
 pub use store::SyncStore;
 
 #[derive(Debug, thiserror::Error)]
