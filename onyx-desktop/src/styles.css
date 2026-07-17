@@ -931,3 +931,21 @@ body.full-width .reading-view { max-width: none; }
 
 .share-link { color: var(--onyx-accent); text-decoration: none; cursor: pointer; }
 .share-link:hover { text-decoration: underline; }
+
+/* ---- quick capture window ---- */
+
+.capture { height: 100vh; display: flex; flex-direction: column;
+  background: var(--onyx-bg-secondary); }
+.capture-input {
+  flex: 1; resize: none; border: none; outline: none; padding: 14px;
+  font: 15px var(--onyx-font-ui); color: var(--onyx-text-primary);
+  background: var(--onyx-bg-primary);
+}
+.capture-footer {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px; font-size: 12px; color: var(--onyx-text-muted);
+}
+.capture-footer button {
+  background: var(--onyx-accent); color: #fff; border-radius: var(--onyx-radius);
+  padding: 5px 14px;
+}

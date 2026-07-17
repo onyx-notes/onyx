@@ -134,5 +134,8 @@
   "clipper.hint": "Clip web pages into your vault via the browser extension",
   "clipper.enable": "Enable web clipper",
   "clipper.running": "Listening on 127.0.0.1:{port}. Paste this token into the extension:",
-  "clipper.token": "Clipper token"
+  "clipper.token": "Clipper token",
+  "capture.placeholder": "Capture a thought… (Ctrl+Enter to save, Esc to cancel)",
+  "capture.hint": "Appends to today's daily note",
+  "capture.save": "Capture"
 }

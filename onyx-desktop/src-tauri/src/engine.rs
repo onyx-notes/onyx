@@ -1089,6 +1089,22 @@ impl Engine {
         Ok(())
     }
 
+    /// Append `text` to a note (creating it if absent), ensuring a blank
+    /// line separates the addition. Used by quick capture.
+    pub fn append_to_note(&mut self, path: &NotePath, text: &str) -> Result<(), EngineError> {
+        let existing = self.vault.read_text(path).unwrap_or_default();
+        let mut combined = existing;
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(text.trim_end());
+        combined.push('\n');
+        self.write_note(path, &combined)
+    }
+
     pub fn delete_note(&mut self, path: &NotePath) -> Result<(), EngineError> {
         self.vault.remove(path)?;
         let id = self.vault.note_id(path);
@@ -1138,6 +1154,22 @@ mod tests {
         }
         let engine = Engine::open(dir.path()).unwrap();
         (dir, engine)
+    }
+
+    #[test]
+    fn append_adds_with_separation() {
+        let (_dir, mut engine) = open_with(&[("log.md", "# Log\nfirst entry")]);
+        engine
+            .append_to_note(&note("log.md"), "second entry")
+            .unwrap();
+        let content = engine.vault().read_text(&note("log.md")).unwrap();
+        assert_eq!(content, "# Log\nfirst entry\n\nsecond entry\n");
+        // Appending to a missing note creates it.
+        engine.append_to_note(&note("new.md"), "hello").unwrap();
+        assert_eq!(
+            engine.vault().read_text(&note("new.md")).unwrap(),
+            "hello\n"
+        );
     }
 
     #[test]

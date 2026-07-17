@@ -1767,3 +1767,24 @@ pub fn clipper_info(state: State<'_, AppState>) -> ClipperInfo {
         token,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Quick capture
+// ---------------------------------------------------------------------------
+
+/// Append captured text to today's daily note (under a timestamped line).
+/// Works from the global-shortcut capture window.
+#[tauri::command]
+pub fn quick_capture(state: State<'_, AppState>, text: String, date: String) -> CmdResult<String> {
+    if text.trim().is_empty() {
+        return Err("nothing to capture".into());
+    }
+    state.with_engine(|engine| {
+        let settings = crate::settings::load(engine.vault());
+        let path = crate::settings::daily_note_path(&settings, &date)?;
+        // A leading time marker helps scan a day's captures.
+        let entry = format!("- {text}");
+        engine.append_to_note(&path, &entry).map_err(err)?;
+        Ok(path.as_str().to_owned())
+    })
+}

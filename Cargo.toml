@@ -67,6 +67,7 @@ nucleo-matcher = "0.3"
 # desktop shell
 tauri = "2"
 tauri-build = "2"
+tauri-plugin-global-shortcut = "2"
 
 # sync / server
 loro = "1"

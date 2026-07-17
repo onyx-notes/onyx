@@ -7,6 +7,7 @@
 pub mod agent;
 mod ai;
 pub mod backup;
+mod capture;
 mod clipper;
 mod commands;
 mod engine;
@@ -30,7 +31,12 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state::AppState::default())
+        .setup(|app| {
+            crate::capture::register_quick_capture(app.handle())?;
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol("onyx", protocol::handle)
         .invoke_handler(tauri::generate_handler![
             commands::open_vault,
@@ -90,6 +96,7 @@ pub fn run() {
             commands::revoke_share,
             commands::publish_site,
             commands::clipper_info,
+            commands::quick_capture,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

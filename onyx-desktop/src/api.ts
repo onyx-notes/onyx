@@ -255,6 +255,8 @@ export const api = {
   publishSite: (folder: string, outputDir: string, siteTitle: string) =>
     invoke<PublishReport>("publish_site", { folder, outputDir, siteTitle }),
   clipperInfo: () => invoke<ClipperInfo>("clipper_info"),
+  quickCapture: (text: string, date: string) =>
+    invoke<string>("quick_capture", { text, date }),
   listShares: () => invoke<ShareEntry[]>("list_shares"),
   revokeShare: (id: string) => invoke<void>("revoke_share", { id }),
   noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),
