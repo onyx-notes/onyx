@@ -1,0 +1,14 @@
+---
+source: crates/onyx-md/tests/extract_corpus.rs
+expression: describe(source)
+---
+frontmatter_tags: []
+frontmatter_aliases: []
+word_count: 10
+headings:
+  H1 "Dashboard"
+tags:
+links:
+  WikiEmbed target="Daily/2026-07-17" heading=None block=None alias=None
+  WikiEmbed target="assets/diagram.png" heading=None block=None alias=None
+  WikiEmbed target="Snippet" heading=Some("Section") block=None alias=Some("shown as this")

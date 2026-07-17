@@ -1,0 +1,12 @@
+---
+source: crates/onyx-md/tests/extract_corpus.rs
+expression: describe(source)
+---
+frontmatter_tags: []
+frontmatter_aliases: []
+word_count: 21
+headings:
+tags:
+links:
+  Wiki target="Other Note" heading=None block=Some("my-block-id") alias=None
+  Wiki target="Other Note" heading=Some("Heading") block=None alias=None

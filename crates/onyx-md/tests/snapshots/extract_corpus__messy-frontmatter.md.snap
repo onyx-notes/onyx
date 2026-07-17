@@ -1,0 +1,13 @@
+---
+source: crates/onyx-md/tests/extract_corpus.rs
+expression: describe(source)
+---
+frontmatter_tags: ["project/onyx", "status/wip"]
+frontmatter_aliases: ["MN", "My Note Alt"]
+word_count: 6
+headings:
+  H1 "Body"
+tags:
+  #inline-tag
+links:
+  Wiki target="Linked" heading=None block=None alias=None

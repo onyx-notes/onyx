@@ -1,0 +1,17 @@
+---
+source: crates/onyx-md/tests/extract_corpus.rs
+expression: describe(source)
+---
+frontmatter_tags: []
+frontmatter_aliases: []
+word_count: 23
+headings:
+tags:
+links:
+  Wiki target="Simple" heading=None block=None alias=None
+  Wiki target="folder/Path Note" heading=None block=None alias=None
+  Wiki target="Note" heading=Some("Heading") block=None alias=Some("alias")
+  Markdown target="Other Note.md" heading=None block=None alias=Some("text")
+  External target="https://example.com" heading=None block=None alias=Some("external")
+  MarkdownEmbed target="assets/pic.png" heading=None block=None alias=Some("alt")
+  WikiEmbed target="wiki-image.png" heading=None block=None alias=None
