@@ -4,6 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+export interface ManagedVault {
+  name: string;
+  path: string;
+  encrypted: boolean;
+}
+
 export interface VaultInfo {
   root: string;
   noteCount: number;
@@ -221,6 +227,10 @@ export const api = {
   syncJoin: (serverUrl: string, code: string) =>
     invoke<void>("sync_join", { serverUrl, code }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
+  platformInfo: () => invoke<{ os: string; mobile: boolean }>("platform_info"),
+  listManagedVaults: () => invoke<ManagedVault[]>("list_managed_vaults"),
+  createManagedVault: (name: string, passphrase: string | null) =>
+    invoke<VaultInfo>("create_managed_vault", { name, passphrase }),
   appPause: () => invoke<void>("app_pause"),
   appResume: () => invoke<void>("app_resume"),
   enrollStart: (serverUrl: string) =>

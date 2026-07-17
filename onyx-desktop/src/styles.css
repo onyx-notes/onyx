@@ -949,3 +949,216 @@ body.full-width .reading-view { max-width: none; }
   background: var(--onyx-accent); color: #fff; border-radius: var(--onyx-radius);
   padding: 5px 14px;
 }
+
+/* ---- mobile shell ---- */
+
+.mobile-app {
+  display: flex;
+  flex-direction: column;
+  height: var(--onyx-viewport-height, 100dvh);
+  padding-top: env(safe-area-inset-top);
+  background: var(--onyx-bg-primary);
+}
+
+.mobile-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--onyx-bg-secondary);
+  border-bottom: 1px solid var(--onyx-border);
+  flex-shrink: 0;
+}
+
+.mobile-title {
+  flex: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile-sync {
+  color: var(--onyx-accent);
+  font-size: 12px;
+}
+
+.mobile-icon {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 20px;
+  color: var(--onyx-text-secondary);
+  border-radius: var(--onyx-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-icon:active {
+  background: var(--onyx-bg-active);
+}
+
+.mobile-editor {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.mobile-editor .editor-host {
+  flex: 1;
+}
+
+.mobile-editor .cm-content {
+  max-width: none;
+  padding: 16px 14px 40vh; /* generous bottom: keeps the caret above the keyboard */
+}
+
+.mobile-bottombar {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+  background: var(--onyx-bg-secondary);
+  border-top: 1px solid var(--onyx-border);
+  flex-shrink: 0;
+}
+
+.mobile-new {
+  min-width: 52px;
+  min-height: 44px;
+  font-size: 26px;
+  color: var(--onyx-bg-primary);
+  background: var(--onyx-accent);
+  border-radius: 999px;
+}
+
+.mobile-scrim {
+  position: fixed;
+  inset: 0;
+  background: #00000080;
+  z-index: 100;
+  display: flex;
+}
+
+.mobile-drawer {
+  width: min(85vw, 320px);
+  height: 100%;
+  background: var(--onyx-bg-secondary);
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  animation: mobile-slide-in 160ms ease-out;
+}
+
+@keyframes mobile-slide-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+.mobile-file {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.mobile-sheet {
+  margin-top: auto;
+  width: 100%;
+  max-height: 70vh;
+  background: var(--onyx-bg-secondary);
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: mobile-sheet-up 180ms ease-out;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mobile-sheet .right-panel {
+  width: 100%;
+  border-left: none;
+  overflow-y: auto;
+}
+
+@keyframes mobile-sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.mobile-sheet-grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--onyx-text-muted);
+  margin: 8px auto;
+  flex-shrink: 0;
+}
+
+.mobile-status {
+  position: fixed;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  left: 12px;
+  right: 12px;
+  background: var(--onyx-bg-tertiary);
+  border: 1px solid var(--onyx-border);
+  border-radius: var(--onyx-radius);
+  padding: 8px 12px;
+  font-size: 13px;
+  z-index: 200;
+}
+
+/* vault manager screen */
+
+.mobile-vaults {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.mobile-tagline {
+  color: var(--onyx-text-muted);
+}
+
+.mobile-vault-list {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.mobile-vault {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--onyx-bg-secondary);
+  border: 1px solid var(--onyx-border);
+  border-radius: 10px;
+  padding: 16px;
+  min-height: 56px;
+}
+
+.mobile-vault span {
+  color: var(--onyx-text-muted);
+  font-size: 12px;
+}
+
+.mobile-create {
+  min-height: 48px;
+  width: 100%;
+  max-width: 420px;
+}
+
+/* Sheet-friendly overlays on small screens (quick switcher, chat…) */
+body.mobile .overlay {
+  padding-top: 6vh;
+}
+
+body.mobile .palette {
+  width: 94vw;
+  max-height: 78vh;
+}

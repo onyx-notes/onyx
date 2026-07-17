@@ -1916,3 +1916,12 @@ pub async fn create_managed_vault(
     };
     install_engine(&app, &state, &root, path_text, engine)
 }
+
+/// Which platform the shell should render for.
+#[tauri::command]
+pub fn platform_info() -> serde_json::Value {
+    serde_json::json!({
+        "os": std::env::consts::OS,
+        "mobile": cfg!(mobile),
+    })
+}

@@ -137,5 +137,12 @@
   "clipper.token": "Clipper token",
   "capture.placeholder": "Capture a thought… (Ctrl+Enter to save, Esc to cancel)",
   "capture.hint": "Appends to today's daily note",
-  "capture.save": "Capture"
+  "capture.save": "Capture",
+  "mobile.tagline": "Tus notas, tu servidor, tu IA.",
+  "mobile.createVault": "Crear un baúl",
+  "mobile.vaultNamePrompt": "Nombre del baúl:",
+  "mobile.vaultEncryptPrompt": "¿Cifrar este baúl con una frase de contraseña?",
+  "mobile.switchVault": "Cambiar",
+  "mobile.encrypted": "cifrado",
+  "mobile.plain": "sin cifrar"
 }

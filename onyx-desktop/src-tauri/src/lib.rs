@@ -105,6 +105,7 @@ pub fn run() {
             commands::quick_capture,
             commands::list_managed_vaults,
             commands::create_managed_vault,
+            commands::platform_info,
             commands::app_pause,
             commands::app_resume,
         ])
