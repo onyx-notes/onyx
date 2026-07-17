@@ -691,7 +691,7 @@ pub fn vault_stats(state: State<'_, AppState>) -> CmdResult<VaultStats> {
                 count: record.word_count.unwrap_or(0),
             })
             .collect();
-        longest.sort_by(|a, b| b.count.cmp(&a.count));
+        longest.sort_by_key(|entry| std::cmp::Reverse(entry.count));
         longest.truncate(5);
 
         Ok(VaultStats {
