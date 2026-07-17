@@ -89,6 +89,11 @@ export interface RagStatus {
   indexedChunks: number;
 }
 
+export interface ClipperInfo {
+  port: number;
+  token: string;
+}
+
 export interface PublishReport {
   pages: number;
   attachments: number;
@@ -249,6 +254,7 @@ export const api = {
   createShare: (path: string) => invoke<ShareLink>("create_share", { path }),
   publishSite: (folder: string, outputDir: string, siteTitle: string) =>
     invoke<PublishReport>("publish_site", { folder, outputDir, siteTitle }),
+  clipperInfo: () => invoke<ClipperInfo>("clipper_info"),
   listShares: () => invoke<ShareEntry[]>("list_shares"),
   revokeShare: (id: string) => invoke<void>("revoke_share", { id }),
   noteHistory: (path: string) => invoke<NoteVersion[]>("note_history", { path }),

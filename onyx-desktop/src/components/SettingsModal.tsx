@@ -59,6 +59,10 @@ export default function SettingsModal(props: {
   const [publishDir, setPublishDir] = createSignal("");
   const [publishTitle, setPublishTitle] = createSignal("");
   const [publishMsg, setPublishMsg] = createSignal<string | null>(null);
+  const [clipper, setClipper] = createSignal<{ port: number; token: string } | null>(null);
+  const enableClipper = async () => {
+    setClipper(await api.clipperInfo());
+  };
   const doPublish = async () => {
     setPublishMsg(t("publish.working"));
     try {
@@ -446,6 +450,27 @@ export default function SettingsModal(props: {
             </div>
             <Show when={publishMsg()}>
               {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+
+            <div class="settings-row">
+              <span class="settings-caps">{t("clipper.hint")}</span>
+              <button class="settings-button" onClick={() => void enableClipper()}>
+                {t("clipper.enable")}
+              </button>
+            </div>
+            <Show when={clipper()}>
+              {(info) => (
+                <div class="settings-imported">
+                  {t("clipper.running", { port: info().port })}
+                  <input
+                    type="text"
+                    readonly
+                    value={info().token}
+                    onClick={(event) => event.currentTarget.select()}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              )}
             </Show>
 
             <div class="settings-row">

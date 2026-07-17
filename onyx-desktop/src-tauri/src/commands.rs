@@ -1745,3 +1745,25 @@ pub fn publish_site(
         output_dir,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Web clipper
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipperInfo {
+    pub port: u16,
+    pub token: String,
+}
+
+/// Start the clipper (if needed) and return the endpoint + token to paste
+/// into the browser extension.
+#[tauri::command]
+pub fn clipper_info(state: State<'_, AppState>) -> ClipperInfo {
+    let token = state.ensure_clipper();
+    ClipperInfo {
+        port: crate::clipper::CLIPPER_PORT,
+        token,
+    }
+}

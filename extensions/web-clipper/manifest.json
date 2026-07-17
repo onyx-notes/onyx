@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Onyx Web Clipper",
+  "version": "0.1.0",
+  "description": "Clip the current page into your Onyx vault as clean markdown.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "action": { "default_popup": "popup.html" },
+  "icons": { "128": "icon.png" }
+}

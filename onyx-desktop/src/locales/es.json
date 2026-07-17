@@ -130,5 +130,9 @@
   "publish.hint": "Exports a static HTML site — host it anywhere",
   "publish.run": "Publish",
   "publish.working": "Publishing…",
-  "publish.done": "Published {pages} pages to {dir}"
+  "publish.done": "Published {pages} pages to {dir}",
+  "clipper.hint": "Clip web pages into your vault via the browser extension",
+  "clipper.enable": "Enable web clipper",
+  "clipper.running": "Listening on 127.0.0.1:{port}. Paste this token into the extension:",
+  "clipper.token": "Clipper token"
 }

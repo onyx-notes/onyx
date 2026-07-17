@@ -7,6 +7,7 @@
 pub mod agent;
 mod ai;
 pub mod backup;
+mod clipper;
 mod commands;
 mod engine;
 mod protocol;
@@ -88,6 +89,7 @@ pub fn run() {
             commands::list_shares,
             commands::revoke_share,
             commands::publish_site,
+            commands::clipper_info,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

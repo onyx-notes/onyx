@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+  body { font: 13px system-ui; width: 300px; padding: 12px; }
+  input, button { width: 100%; box-sizing: border-box; margin: 4px 0; padding: 6px; }
+  #status { margin-top: 8px; min-height: 1.2em; color: #555; }
+  .err { color: #c00; }
+</style></head><body>
+<label>Onyx token <input id="token" type="password" placeholder="from Onyx settings"></label>
+<label>Folder <input id="folder" type="text" value="clippings"></label>
+<button id="clip">Clip this page</button>
+<div id="status"></div>
+<script src="lib/Readability.js"></script>
+<script src="lib/turndown.js"></script>
+<script src="popup.js"></script>
+</body></html>

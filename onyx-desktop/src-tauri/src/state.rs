@@ -43,6 +43,34 @@ pub struct AppState {
     pub ai_log: Arc<crate::ai::AiLog>,
     /// In-flight device enrollment (new-device side).
     pub pending_enroll: Mutex<Option<PendingEnrollment>>,
+    /// Web-clipper server + the token the extension must present.
+    clipper: Mutex<Option<crate::clipper::Clipper>>,
+    pub clipper_token: Mutex<String>,
+}
+
+impl AppState {
+    /// Start the clipper once (idempotent); returns the token to show the
+    /// user. A random token gates writes so only the paired extension can
+    /// post clips.
+    pub fn ensure_clipper(&self) -> String {
+        let mut token_guard = self.clipper_token.lock();
+        if token_guard.is_empty() {
+            let mut bytes = [0u8; 18];
+            getrandom::fill(&mut bytes).expect("OS randomness must be available");
+            *token_guard = data_encoding::BASE64URL_NOPAD.encode(&bytes);
+        }
+        let token = token_guard.clone();
+        drop(token_guard);
+
+        let mut clipper_guard = self.clipper.lock();
+        if clipper_guard.is_none() {
+            match crate::clipper::spawn(token.clone(), Arc::clone(&self.engine)) {
+                Ok(clipper) => *clipper_guard = Some(clipper),
+                Err(error) => tracing::warn!(%error, "clipper failed to start"),
+            }
+        }
+        token
+    }
 }
 
 /// New-device enrollment state between begin → wait → confirm.
