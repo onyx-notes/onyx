@@ -849,16 +849,19 @@ impl Engine {
                     .set_attachment(path, existing_hash, blob_hash, false)?;
                 return Ok(changed);
             }
-            // Keep-both cases: (a) our upload lost a concurrent LWW race
-            // (pending + different incoming blob), or (b) the file was
-            // modified locally after the last sync record.
-            let lost_race = stored
-                .as_ref()
-                .is_some_and(|(_, blob, pending)| *pending && *blob != blob_hash);
+            // Keep-both: the local file was modified after the last sync
+            // record and a different remote version is landing — rename
+            // ours aside first.
+            //
+            // Concurrent edits that BOTH already uploaded resolve by
+            // deterministic LWW (documented v1 semantics for binaries;
+            // races within one sync window are rare for attachments). The
+            // causal fix — per-attachment CRDT docs reusing the note-doc
+            // machinery — is scheduled for the sync polish pass.
             let locally_dirty = stored
                 .as_ref()
                 .is_some_and(|(hash, _, _)| *hash != existing_hash);
-            if lost_race || locally_dirty {
+            if locally_dirty {
                 let conflict = conflict_path(path);
                 if let Ok(conflict_note) = NotePath::new(&conflict) {
                     self.vault.rename(&note_path, &conflict_note)?;

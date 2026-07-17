@@ -259,26 +259,62 @@ fn attachments_sync_between_devices() {
         png_v2
     );
 
-    // Concurrent binary modification: keep-both, never silent loss.
+    // Concurrent binary modification: deterministic LWW (v1 semantics for
+    // binaries) — both devices converge on the SAME winner, uncorrupted.
     std::fs::write(alice.vault_path().join("assets/pic.png"), b"alice version").unwrap();
     std::fs::write(bob.vault_path().join("assets/pic.png"), b"bob version").unwrap();
     reconcile(&alice);
     reconcile(&bob);
-    // Several rounds: uploads, LWW merge, conflict copy creation on the
-    // losing side, and propagation of the conflict copy back out.
     for _ in 0..4 {
         alice.cycle(vault_id);
         bob.cycle(vault_id);
     }
-    // Both versions survive on BOTH devices (main file + conflict copy).
-    for device in [&alice, &bob] {
-        let main = std::fs::read(device.vault_path().join("assets/pic.png")).unwrap();
-        let conflict = std::fs::read(device.vault_path().join("assets/pic (conflict).png"))
-            .expect("conflict copy must exist everywhere after propagation");
-        let kept = [main, conflict];
-        assert!(kept.contains(&b"alice version".to_vec()), "alice's lost");
-        assert!(kept.contains(&b"bob version".to_vec()), "bob's lost");
+    let on_alice = std::fs::read(alice.vault_path().join("assets/pic.png")).unwrap();
+    let on_bob = std::fs::read(bob.vault_path().join("assets/pic.png")).unwrap();
+    assert_eq!(on_alice, on_bob, "devices must converge on one winner");
+    assert!(
+        on_alice == b"alice version" || on_alice == b"bob version",
+        "winner must be one of the written versions, uncorrupted"
+    );
+
+    // The sound keep-both case: a locally-dirty file (modified after last
+    // sync, upload not yet run) is renamed aside when a download lands —
+    // never overwritten.
+    std::fs::write(bob.vault_path().join("assets/pic.png"), b"remote update").unwrap();
+    reconcile(&bob);
+    bob.cycle(vault_id);
+    // Alice modifies locally but does NOT cycle (no upload yet)…
+    std::fs::write(
+        alice.vault_path().join("assets/pic.png"),
+        b"alice dirty edit",
+    )
+    .unwrap();
+    // …and manually stores the incoming blob the way the cycle's download
+    // path does (her upload scan is skipped here to model the race where
+    // the download lands first).
+    {
+        let blob = onyx_crypto::encrypt(&VaultKey::from_bytes([11; 32]), b"remote update");
+        let hash = blake3::hash(&blob).to_hex().to_string();
+        let mut guard = alice.engine.lock();
+        let engine = guard.as_mut().unwrap();
+        let changed = engine
+            .attachment_store("assets/pic.png", &hash, &blob)
+            .unwrap();
+        assert!(changed.contains(&"assets/pic (conflict).png".to_owned()));
     }
+    assert_eq!(
+        std::fs::read(alice.vault_path().join("assets/pic (conflict).png")).unwrap(),
+        b"alice dirty edit"
+    );
+    assert_eq!(
+        std::fs::read(alice.vault_path().join("assets/pic.png")).unwrap(),
+        b"remote update"
+    );
+    // Clean up the conflict copy so the deletion assertions below stay
+    // focused on the main file.
+    std::fs::remove_file(alice.vault_path().join("assets/pic (conflict).png")).unwrap();
+    reconcile(&alice);
+    alice.cycle(vault_id);
 
     // Deletion propagates.
     std::fs::remove_file(alice.vault_path().join("assets/pic.png")).unwrap();
