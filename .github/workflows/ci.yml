@@ -36,3 +36,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  perf:
+    name: perf budgets (10k corpus)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Enforce perf budgets
+        run: cargo run --release -p xtask -- ci-perf /tmp/onyx-ci-corpus 10000

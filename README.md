@@ -43,12 +43,48 @@ privacy-first alternative to Obsidian that opens your existing Obsidian vault
 | `onyx-server` | Self-hosted zero-knowledge sync + backup server (axum) |
 | `xtask` | Bench harness, corpus generation, CI perf gates |
 
+## Status
+
+Working today (all covered by tests):
+
+- **Editor**: CodeMirror 6 live preview (Obsidian-style mark concealing),
+  wikilinks with autocomplete + click-to-follow, embeds/transclusions,
+  tags, tasks, tabs (horizontal + vertical rail) with per-tab history,
+  outline + backlinks panels, quick switcher (Ctrl+P), command palette
+  (Ctrl+Shift+P), daily notes, settings with `.obsidian` import
+- **Encryption at rest**: per-vault passphrase (argon2id), encrypted
+  content AND filenames, in-RAM indexes — nothing legible on disk
+- **Sync**: self-hosted zero-knowledge server; CRDT text merge (concurrent
+  edits never lose text), delete propagation with edits-beat-deletes,
+  attachment sync, WebSocket live push (sub-second), device pairing codes
+- **Backups**: encrypted, deduplicated snapshots to local/S3/WebDAV via
+  OpenDAL, standalone disaster restore
+- **Plugins**: sandboxed (separate-origin iframe + capability broker),
+  `.onyx/plugins/`, sample plugin in `plugins/word-count/`
+- **Graph view** (Ctrl+G), **Vault Insights** (all-local analytics),
+  **AI chat** (BYOK: OpenAI-compatible/Anthropic/Ollama, request log)
+
+## Quickstart
+
+```sh
+# Desktop app (needs Rust, Node 20+, pnpm; Linux: webkit2gtk + gtk3 dev)
+cd onyx-desktop && pnpm install && pnpm tauri dev
+
+# Sync server (single static binary; put TLS in front for production)
+cargo run --release -p onyx-server -- --data-dir ./data --listen 0.0.0.0:7677
+```
+
+Open any folder of markdown — an existing Obsidian vault works as-is and
+is never modified outside `.onyx/`.
+
 ## Development
 
 ```sh
 cargo test --workspace          # all Rust tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
+cd onyx-desktop && pnpm test    # frontend tests
+cargo run --release -p xtask -- ci-perf /tmp/corpus 10000  # perf budgets
 ```
 
 ## License

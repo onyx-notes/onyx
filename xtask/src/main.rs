@@ -20,6 +20,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("corpus") => corpus(&args[1..]),
         Some("bench-index") => bench_index(&args[1..]),
+        Some("ci-perf") => ci_perf(&args[1..]),
         _ => {
             eprintln!("usage: cargo xtask <corpus <dir> [notes] | bench-index <dir>>");
             return ExitCode::FAILURE;
@@ -31,6 +32,83 @@ fn main() -> ExitCode {
             eprintln!("error: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// CI perf gate: build indexes over a generated corpus and fail the build
+/// if any budget is breached. Budgets are for the 10k-note CI corpus on
+/// shared runners (the 100k desktop budgets live in the plan; scale ~10x).
+fn ci_perf(args: &[String]) -> Result<(), String> {
+    let dir = args.first().ok_or("ci-perf: missing <dir>")?;
+    let notes: usize = args
+        .get(1)
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(10_000);
+    let config = CorpusConfig {
+        notes,
+        ..CorpusConfig::BENCH_100K
+    };
+    onyx_testkit::write_to_dir(Path::new(dir), config).map_err(|error| error.to_string())?;
+
+    let vault = Vault::new(Arc::new(RealFs::new(dir)), VaultConfig::default());
+    let mut failures = Vec::new();
+    let mut gate = |name: &str, actual_ms: u128, budget_ms: u128| {
+        let ok = actual_ms <= budget_ms;
+        println!(
+            "{name}: {actual_ms}ms (budget {budget_ms}ms) {}",
+            if ok { "OK" } else { "FAIL" }
+        );
+        if !ok {
+            failures.push(name.to_owned());
+        }
+    };
+
+    let started = Instant::now();
+    let mut index = Index::open_in_memory([0; 16]).map_err(|error| error.to_string())?;
+    index.rebuild(&vault).map_err(|error| error.to_string())?;
+    gate("index_rebuild_10k", started.elapsed().as_millis(), 8_000);
+
+    let started = Instant::now();
+    index.reconcile(&vault).map_err(|error| error.to_string())?;
+    gate("reconcile_quiet_10k", started.elapsed().as_millis(), 1_500);
+
+    let started = Instant::now();
+    let graph = LinkGraph::build(&index).map_err(|error| error.to_string())?;
+    gate("graph_build_10k", started.elapsed().as_millis(), 500);
+    let _ = graph.edge_count();
+
+    let mut search = SearchIndex::open_in_ram().map_err(|error| error.to_string())?;
+    for record in index.all_notes().map_err(|error| error.to_string())? {
+        if !record.is_markdown {
+            continue;
+        }
+        let body = vault
+            .read_text(&record.path)
+            .map_err(|error| error.to_string())?;
+        search
+            .upsert(record.id, record.path.as_str(), &record.title, &body, &[])
+            .map_err(|error| error.to_string())?;
+    }
+    search.commit().map_err(|error| error.to_string())?;
+    let started = Instant::now();
+    let _ = search
+        .search("privacy encryption", 20)
+        .map_err(|error| error.to_string())?;
+    gate("fts_query_10k", started.elapsed().as_millis(), 100);
+
+    let mut quick = QuickSwitcher::new();
+    for record in index.all_notes().map_err(|error| error.to_string())? {
+        quick.upsert(record.id, &record.title, record.path.as_str(), &[]);
+    }
+    let started = Instant::now();
+    let _ = quick.query("note 42", 20);
+    gate("quick_query_10k", started.elapsed().as_millis(), 50);
+
+    if failures.is_empty() {
+        println!("all perf budgets met");
+        Ok(())
+    } else {
+        Err(format!("perf budgets breached: {}", failures.join(", ")))
     }
 }
 
