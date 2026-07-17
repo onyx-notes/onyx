@@ -1,0 +1,14 @@
+# winget manifest (template — version/hash filled per release).
+PackageIdentifier: Onyx.Onyx
+PackageVersion: 0.1.0
+PackageName: Onyx
+Publisher: Onyx
+License: AGPL-3.0-or-later
+ShortDescription: Fast, private, self-hosted markdown notes
+Installers:
+  - Architecture: x64
+    InstallerType: nsis
+    InstallerUrl: https://github.com/onyx-notes/onyx/releases/download/v0.1.0/Onyx_0.1.0_x64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: singleton
+ManifestVersion: 1.6.0

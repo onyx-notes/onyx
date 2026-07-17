@@ -1,0 +1,5 @@
+# Automatic HTTPS for the Onyx sync server. WebSocket upgrades pass through
+# transparently — no extra config needed.
+{$ONYX_DOMAIN} {
+	reverse_proxy onyx-server:7677
+}

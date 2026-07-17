@@ -1,0 +1,15 @@
+# AUR PKGBUILD (template — version/sums filled per release).
+pkgname=onyx-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fast, private, self-hosted markdown notes"
+arch=('x86_64')
+url="https://github.com/onyx-notes/onyx"
+license=('AGPL3')
+depends=('webkit2gtk-4.1' 'gtk3')
+source=("https://github.com/onyx-notes/onyx/releases/download/v${pkgver}/onyx_${pkgver}_amd64.deb")
+sha256sums=('SKIP')
+
+package() {
+  tar -xf data.tar.gz -C "${pkgdir}"
+}

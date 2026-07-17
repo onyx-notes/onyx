@@ -70,9 +70,16 @@ Working today (all covered by tests):
 # Desktop app (needs Rust, Node 20+, pnpm; Linux: webkit2gtk + gtk3 dev)
 cd onyx-desktop && pnpm install && pnpm tauri dev
 
-# Sync server (single static binary; put TLS in front for production)
+# Sync server — one command, automatic HTTPS via Caddy
+cd onyx-server && ONYX_DOMAIN=notes.example.com docker compose up -d
+# …or the single static binary:
 cargo run --release -p onyx-server -- --data-dir ./data --listen 0.0.0.0:7677
 ```
+
+Installers (macOS/Windows/Linux), the server Docker image, and package-
+manager manifests are built by `.github/workflows/release.yml` on a
+version tag; code signing and notarization activate when the maintainer
+adds the documented secrets. See [packaging/](packaging/).
 
 Open any folder of markdown — an existing Obsidian vault works as-is and
 is never modified outside `.onyx/`.

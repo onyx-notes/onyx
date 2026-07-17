@@ -1,0 +1,32 @@
+# Single-command self-hosting: `docker compose up -d`.
+# Caddy terminates TLS (automatic Let's Encrypt) in front of the server.
+services:
+  onyx-server:
+    build:
+      context: ..
+      dockerfile: onyx-server/Dockerfile
+    image: onyxnotes/onyx-server:latest
+    restart: unless-stopped
+    volumes:
+      - onyx-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      # Set to your domain before first run.
+      ONYX_DOMAIN: ${ONYX_DOMAIN:-onyx.example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - onyx-server
+
+volumes:
+  onyx-data:
+  caddy-data:
+  caddy-config:
