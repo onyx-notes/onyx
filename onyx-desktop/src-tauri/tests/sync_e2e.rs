@@ -259,23 +259,57 @@ fn attachments_sync_between_devices() {
         png_v2
     );
 
-    // Concurrent binary modification: deterministic LWW (v1 semantics for
-    // binaries) — both devices converge on the SAME winner, uncorrupted.
+    // Concurrent binary modification: TRUE keep-both via causal pointer
+    // docs — the winner converges as the main file, the loser materializes
+    // as an identical hash-named conflict copy on BOTH devices.
     std::fs::write(alice.vault_path().join("assets/pic.png"), b"alice version").unwrap();
     std::fs::write(bob.vault_path().join("assets/pic.png"), b"bob version").unwrap();
     reconcile(&alice);
     reconcile(&bob);
-    for _ in 0..4 {
+    for _ in 0..6 {
         alice.cycle(vault_id);
         bob.cycle(vault_id);
     }
-    let on_alice = std::fs::read(alice.vault_path().join("assets/pic.png")).unwrap();
-    let on_bob = std::fs::read(bob.vault_path().join("assets/pic.png")).unwrap();
-    assert_eq!(on_alice, on_bob, "devices must converge on one winner");
-    assert!(
-        on_alice == b"alice version" || on_alice == b"bob version",
-        "winner must be one of the written versions, uncorrupted"
+    for (label, device) in [("alice", &alice), ("bob", &bob)] {
+        let mut contents: Vec<Vec<u8>> = std::fs::read_dir(device.vault_path().join("assets"))
+            .unwrap()
+            .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
+            .collect();
+        contents.sort();
+        assert!(
+            contents.contains(&b"alice version".to_vec()),
+            "{label}: alice's version lost"
+        );
+        assert!(
+            contents.contains(&b"bob version".to_vec()),
+            "{label}: bob's version lost"
+        );
+    }
+    // Main files converge on the same winner.
+    assert_eq!(
+        std::fs::read(alice.vault_path().join("assets/pic.png")).unwrap(),
+        std::fs::read(bob.vault_path().join("assets/pic.png")).unwrap(),
+        "main files must converge"
     );
+    // Clean up conflict copies so the deletion assertions stay focused.
+    for device in [&alice, &bob] {
+        for entry in std::fs::read_dir(device.vault_path().join("assets")).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("conflict")
+            {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+        reconcile(device);
+    }
+    for _ in 0..3 {
+        alice.cycle(vault_id);
+        bob.cycle(vault_id);
+    }
 
     // The sound keep-both case: a locally-dirty file (modified after last
     // sync, upload not yet run) is renamed aside when a download lands —
@@ -300,10 +334,10 @@ fn attachments_sync_between_devices() {
         let changed = engine
             .attachment_store("assets/pic.png", &hash, &blob)
             .unwrap();
-        assert!(changed.contains(&"assets/pic (conflict).png".to_owned()));
+        assert!(changed.contains(&"assets/pic (conflict-local).png".to_owned()));
     }
     assert_eq!(
-        std::fs::read(alice.vault_path().join("assets/pic (conflict).png")).unwrap(),
+        std::fs::read(alice.vault_path().join("assets/pic (conflict-local).png")).unwrap(),
         b"alice dirty edit"
     );
     assert_eq!(
@@ -312,7 +346,7 @@ fn attachments_sync_between_devices() {
     );
     // Clean up the conflict copy so the deletion assertions below stay
     // focused on the main file.
-    std::fs::remove_file(alice.vault_path().join("assets/pic (conflict).png")).unwrap();
+    std::fs::remove_file(alice.vault_path().join("assets/pic (conflict-local).png")).unwrap();
     reconcile(&alice);
     alice.cycle(vault_id);
 

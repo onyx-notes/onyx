@@ -320,3 +320,150 @@ mod manifest_tests {
         assert_eq!(entries.len(), 3);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Attachment documents
+//
+// Binaries can't merge as text, but their *pointers* can live in a CRDT:
+// an attachment doc's content is one line per blob hash. Updates replace
+// the whole content with `delete-all + insert-one-line` as explicit ops
+// (never a text diff — hex hashes share characters and a diff could
+// splice partial lines). Concurrent updates therefore merge as intact
+// whole lines in a deterministic order on every replica:
+//
+//   line 0        = the winner (converged everywhere)
+//   further lines = concurrent losers → keep-both conflict copies
+//
+// This gives binaries real causality: sequential updates collapse to one
+// line; only true concurrency produces multiple lines.
+// ---------------------------------------------------------------------------
+
+impl SyncDoc {
+    /// Mark this doc as an attachment pointer doc (set at creation).
+    pub fn set_kind_attachment(&self) -> Result<(), SyncError> {
+        self.doc
+            .get_map("meta")
+            .insert("kind", "attachment")
+            .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    pub fn is_attachment(&self) -> bool {
+        matches!(
+            self.doc.get_map("meta").get("kind"),
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::String(kind)))
+                if kind.as_str() == "attachment"
+        )
+    }
+
+    /// Point this attachment at a new blob: delete-all + insert as explicit
+    /// contiguous ops (see module comment for why not `set_text`).
+    pub fn set_blob(&self, blob_hash: &str) -> Result<(), SyncError> {
+        let text = self.doc.get_text(CONTENT);
+        let current_len = text.len_unicode();
+        if current_len > 0 {
+            text.delete(0, current_len)
+                .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        }
+        text.insert(0, &format!("{blob_hash}\n"))
+            .map_err(|error| SyncError::Crdt(error.to_string()))?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// The blob lines: `(winner, losers)`. Duplicate lines (from concurrent
+    /// identical collapses) are deduplicated; `None` if the doc is empty.
+    pub fn blob_state(&self) -> Option<(String, Vec<String>)> {
+        let content = self.text();
+        let mut seen = std::collections::HashSet::new();
+        let mut lines: Vec<String> = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.is_empty() && seen.insert(line.to_owned()) {
+                lines.push(line.to_owned());
+            }
+        }
+        let winner = lines.first()?.clone();
+        Some((winner, lines[1..].to_vec()))
+    }
+}
+
+#[cfg(test)]
+mod attachment_doc_tests {
+    use super::*;
+
+    #[test]
+    fn kind_marker_travels() {
+        let a = SyncDoc::new(1);
+        a.set_kind_attachment().unwrap();
+        a.set_path("assets/pic.png").unwrap();
+        assert!(a.is_attachment());
+
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+        assert!(b.is_attachment());
+        assert!(!SyncDoc::new(3).is_attachment());
+    }
+
+    #[test]
+    fn sequential_updates_collapse_to_one_line() {
+        let a = SyncDoc::new(1);
+        a.set_kind_attachment().unwrap();
+        a.set_blob("hash-v1").unwrap();
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+
+        b.set_blob("hash-v2").unwrap();
+        a.import(&b.export_from(&a.version()).unwrap()).unwrap();
+
+        let (winner, losers) = a.blob_state().unwrap();
+        assert_eq!(winner, "hash-v2");
+        assert!(losers.is_empty(), "sequential update must not conflict");
+    }
+
+    #[test]
+    fn concurrent_updates_yield_winner_plus_losers_identically() {
+        let a = SyncDoc::new(1);
+        a.set_kind_attachment().unwrap();
+        a.set_blob("hash-base").unwrap();
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+
+        a.set_blob("hash-from-a").unwrap();
+        b.set_blob("hash-from-b").unwrap();
+        let a_to_b = a.export_from(&b.version()).unwrap();
+        let b_to_a = b.export_from(&a.version()).unwrap();
+        a.import(&b_to_a).unwrap();
+        b.import(&a_to_b).unwrap();
+
+        let (winner_a, losers_a) = a.blob_state().unwrap();
+        let (winner_b, losers_b) = b.blob_state().unwrap();
+        assert_eq!(winner_a, winner_b, "winner must converge");
+        assert_eq!(losers_a, losers_b, "losers must converge");
+        assert_eq!(losers_a.len(), 1, "exactly one concurrent loser");
+        let mut all = vec![winner_a.clone()];
+        all.extend(losers_a.clone());
+        all.sort();
+        assert_eq!(all, vec!["hash-from-a", "hash-from-b"]);
+    }
+
+    #[test]
+    fn concurrent_identical_collapses_dedupe() {
+        let a = SyncDoc::new(1);
+        a.set_kind_attachment().unwrap();
+        a.set_blob("same").unwrap();
+        let b = SyncDoc::new(2);
+        b.import(&a.export_from(&[]).unwrap()).unwrap();
+
+        a.set_blob("same").unwrap();
+        b.set_blob("same").unwrap();
+        let a_to_b = a.export_from(&b.version()).unwrap();
+        a.import(&b.export_from(&a.version()).unwrap()).unwrap();
+        b.import(&a_to_b).unwrap();
+
+        let (winner, losers) = a.blob_state().unwrap();
+        assert_eq!(winner, "same");
+        assert!(losers.is_empty(), "identical lines dedupe");
+    }
+}

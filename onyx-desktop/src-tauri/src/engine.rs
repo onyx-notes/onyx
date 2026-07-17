@@ -145,12 +145,23 @@ pub struct BlobUpload {
     plaintext_hash: [u8; 32],
 }
 
-/// `photo.png` → `photo (conflict).png` — the keep-both rename for
-/// concurrently-modified binaries.
-fn conflict_path(path: &str) -> String {
+/// What the sync inbox must fetch for one attachment: the winning blob
+/// plus any concurrent losers (keep-both copies).
+pub struct AttachmentFetch {
+    pub path: String,
+    pub winner: String,
+    pub losers: Vec<String>,
+}
+
+/// `photo.png` + tag → `photo (conflict-ab12cd).png`. Hash-derived, so
+/// every device creates the identical copy for the same loser.
+fn conflict_path(path: &str, tag: &str) -> String {
+    let short = &tag[..tag.len().min(6)];
     match path.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => format!("{stem} (conflict).{ext}"),
-        _ => format!("{path} (conflict)"),
+        Some((stem, ext)) if !stem.is_empty() => {
+            format!("{stem} (conflict-{short}).{ext}")
+        }
+        _ => format!("{path} (conflict-{short})"),
     }
 }
 
@@ -593,11 +604,20 @@ impl Engine {
                             self.quick.remove(id);
                             self.search.remove(id)?;
                             self.search_dirty = true;
+                            if !note_path.is_markdown() {
+                                sync.store.remove_attachment(&path_text)?;
+                            }
                             changed_paths.push(path_text);
                         } else {
                             sync.manifest_set_live(&doc_id, true)?;
                         }
                     } else if !self.vault.fs().exists(&note_path) {
+                        // Attachments rematerialize via the blob inbox
+                        // (their doc text is a hash pointer, not content).
+                        if !note_path.is_markdown() {
+                            sync.store.remove_attachment(&path_text)?;
+                            continue;
+                        }
                         // Remote resurrect: rematerialize from doc state.
                         let text = match sync.docs.get(&doc_id) {
                             Some(doc) => doc.text(),
@@ -641,6 +661,19 @@ impl Engine {
                 }
             };
 
+            // Attachment pointer docs: import only — blob downloads and
+            // conflict copies reconcile in the cycle's attachment inbox.
+            if doc.is_attachment() {
+                if doc.import(&update).is_err() {
+                    tracing::warn!(seq = op.seq, "malformed attachment update skipped");
+                    continue;
+                }
+                let kept_hash = sync.store.materialized_hash(op.doc_id)?.unwrap_or([0; 32]);
+                let doc = sync.docs.get(&op.doc_id).expect("cached above");
+                sync.store.save_doc(op.doc_id, doc, kept_hash)?;
+                continue;
+            }
+
             // Fold un-synced local file edits BEFORE merging, so the CRDT
             // merge (not a file overwrite) resolves concurrency.
             if let Some(path_text) = doc.path() {
@@ -657,6 +690,14 @@ impl Engine {
 
             if doc.import(&update).is_err() {
                 tracing::warn!(seq = op.seq, "malformed CRDT update skipped");
+                continue;
+            }
+
+            // A brand-new doc reveals its kind only after the import.
+            if doc.is_attachment() {
+                let kept_hash = sync.store.materialized_hash(op.doc_id)?.unwrap_or([0; 32]);
+                let doc = sync.docs.get(&op.doc_id).expect("cached above");
+                sync.store.save_doc(op.doc_id, doc, kept_hash)?;
                 continue;
             }
 
@@ -704,13 +745,22 @@ impl Engine {
     }
 
     // ------------------------------------------------------------------
-    // Attachment sync (content-addressed encrypted blobs)
+    // Attachment sync: content-addressed encrypted blobs + pointer CRDTs
+    //
+    // Each attachment has a SyncDoc whose content is blob-hash lines (see
+    // onyx-sync doc.rs). Sequential updates collapse to one line; true
+    // concurrency yields winner + losers deterministically on every
+    // device — losers materialize as conflict copies (keep-both), then
+    // the doc collapses to the winner. Deletes ride the same manifest
+    // tombstones as notes.
     // ------------------------------------------------------------------
 
     /// Attachments whose content changed since last sync: encrypted and
     /// ready for blob upload. Also tombstones attachments whose files
-    /// vanished (deletion propagates via the manifest attachment map).
+    /// vanished.
     pub fn attachments_to_upload(&mut self) -> Result<Vec<BlobUpload>, EngineError> {
+        use std::collections::hash_map::Entry;
+
         let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
         let mut uploads = Vec::new();
 
@@ -738,96 +788,130 @@ impl Engine {
             });
         }
 
-        // Deletion scan: previously-synced attachments whose file is gone.
-        for path in sync.store.all_attachment_paths()? {
-            let Ok(note_path) = NotePath::new(&path) else {
+        // Deletion scan: attachment docs whose file is gone → tombstone
+        // (identical semantics to note deletion).
+        for doc_id in sync.store.all_doc_ids()? {
+            if doc_id == onyx_sync::MANIFEST_DOC_ID || sync.manifest_live(&doc_id)? == Some(false) {
+                continue;
+            }
+            let (path_text, is_attachment) = {
+                let doc = match sync.docs.entry(doc_id) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                            continue;
+                        };
+                        entry.insert(doc)
+                    }
+                };
+                (doc.path(), doc.is_attachment())
+            };
+            if !is_attachment {
+                continue;
+            }
+            let Some(path_text) = path_text else { continue };
+            let Ok(note_path) = NotePath::new(&path_text) else {
                 continue;
             };
             if !self.vault.fs().exists(&note_path) {
-                sync.ensure_manifest()?.set_attachment(&path, "")?;
-                sync.manifest_dirty = true;
-                sync.store.remove_attachment(&path)?;
+                sync.manifest_set_live(&doc_id, false)?;
+                sync.store.remove_attachment(&path_text)?;
             }
         }
+        sync.save_manifest_if_dirty()?;
         Ok(uploads)
     }
 
-    /// Record completed uploads in the manifest + sidecar. Call only after
-    /// the blobs are confirmed on the server (receivers fetch by hash).
+    /// Record confirmed uploads: point each attachment doc at its new blob
+    /// (the doc ops export through the normal collect that follows, so the
+    /// pointer only ever ships AFTER the blob is fetchable).
     pub fn attachments_mark_uploaded(&mut self, uploads: &[BlobUpload]) -> Result<(), EngineError> {
+        use std::collections::hash_map::Entry;
+
         let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
         for upload in uploads {
-            sync.ensure_manifest()?
-                .set_attachment(&upload.path, &upload.blob_hash)?;
-            sync.manifest_dirty = true;
+            let Ok(note_path) = NotePath::new(&upload.path) else {
+                continue;
+            };
+            let doc_id = *self.vault.note_id(&note_path).as_bytes();
+            let doc = match sync.docs.entry(doc_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let doc = match sync.store.load_doc(doc_id, sync.peer)? {
+                        Some((doc, _)) => doc,
+                        None => {
+                            let doc = onyx_sync::SyncDoc::new(sync.peer);
+                            doc.set_kind_attachment()?;
+                            doc.set_path(&upload.path)?;
+                            doc
+                        }
+                    };
+                    entry.insert(doc)
+                }
+            };
+            doc.set_blob(&upload.blob_hash)?;
+            sync.store.save_doc(doc_id, doc, upload.plaintext_hash)?;
             sync.store.set_attachment(
                 &upload.path,
                 upload.plaintext_hash,
                 &upload.blob_hash,
-                true, // pending until the merged manifest confirms our blob
+                false,
             )?;
+            // Recreating a tombstoned attachment resurrects it.
+            if sync.manifest_live(&doc_id)? == Some(false) {
+                sync.manifest_set_live(&doc_id, true)?;
+            }
         }
+        sync.save_manifest_if_dirty()?;
         Ok(())
     }
 
-    /// Apply attachment deletions from the (already-merged) manifest.
-    /// Returns changed paths.
-    pub fn apply_attachment_deletes(&mut self) -> Result<Vec<String>, EngineError> {
-        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
-        let entries = sync.ensure_manifest()?.attachments();
-        let mut changed = Vec::new();
-        for (path, blob_hash) in entries {
-            if !blob_hash.is_empty() {
-                continue;
-            }
-            let Ok(note_path) = NotePath::new(&path) else {
-                continue;
-            };
-            // Only delete what we know we synced (a brand-new local file at
-            // the same path must not be destroyed by an old tombstone).
-            let Some((synced_hash, _, _)) = sync.store.attachment(&path)? else {
-                continue;
-            };
-            if let Ok(content) = self.vault.read_bytes(&note_path) {
-                if *blake3::hash(&content).as_bytes() == synced_hash {
-                    self.vault.remove(&note_path)?;
-                    self.index
-                        .handle_event(&self.vault, &VaultEvent::Removed(note_path.clone()))?;
-                    self.quick.remove(self.vault.note_id(&note_path));
-                    changed.push(path.clone());
-                }
-            }
-            sync.store.remove_attachment(&path)?;
-        }
-        Ok(changed)
-    }
+    /// Attachments whose pointer docs disagree with local state: the
+    /// winner blob to fetch plus any concurrent losers (keep-both copies).
+    pub fn attachments_needed(&mut self) -> Result<Vec<AttachmentFetch>, EngineError> {
+        use std::collections::hash_map::Entry;
 
-    /// Attachments the manifest says exist but we don't have (or have an
-    /// outdated copy of): `(path, blob_hash)` pairs to download.
-    pub fn attachments_needed(&mut self) -> Result<Vec<(String, String)>, EngineError> {
         let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
         let mut needed = Vec::new();
-        for (path, blob_hash) in sync.ensure_manifest()?.attachments() {
-            if blob_hash.is_empty() {
+        for doc_id in sync.store.all_doc_ids()? {
+            if doc_id == onyx_sync::MANIFEST_DOC_ID || sync.manifest_live(&doc_id)? == Some(false) {
                 continue;
             }
-            let stored = sync.store.attachment(&path)?;
-            if stored.as_ref().map(|(_, blob, _)| blob.clone()) == Some(blob_hash.clone()) {
-                // The merged manifest agrees with our blob: acknowledge.
-                if stored.is_some_and(|(_, _, pending)| pending) {
-                    sync.store.ack_attachment(&path)?;
-                }
+            let (path_text, state, is_attachment) = {
+                let doc = match sync.docs.entry(doc_id) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                            continue;
+                        };
+                        entry.insert(doc)
+                    }
+                };
+                (doc.path(), doc.blob_state(), doc.is_attachment())
+            };
+            if !is_attachment {
                 continue;
             }
-            needed.push((path, blob_hash));
+            let Some(path_text) = path_text else { continue };
+            let Some((winner, losers)) = state else {
+                continue;
+            };
+            let stored_blob = sync.store.attachment(&path_text)?.map(|(_, blob, _)| blob);
+            if stored_blob.as_deref() == Some(winner.as_str()) && losers.is_empty() {
+                continue; // fully reconciled
+            }
+            needed.push(AttachmentFetch {
+                path: path_text,
+                winner,
+                losers,
+            });
         }
         Ok(needed)
     }
 
-    /// Store a downloaded attachment blob. If the local file was modified
-    /// while a different version synced, the local version is kept beside
-    /// it as a conflict copy (keep-both, never silent loss). Returns the
-    /// paths changed.
+    /// Store the winner blob for an attachment. A locally-dirty file
+    /// (modified after last sync, not yet uploaded) is renamed aside
+    /// first — never overwritten. Returns changed paths.
     pub fn attachment_store(
         &mut self,
         path: &str,
@@ -844,25 +928,15 @@ impl Engine {
             let existing_hash = *blake3::hash(&existing).as_bytes();
             let stored = sync.store.attachment(path)?;
             if existing_hash == *blake3::hash(&plaintext).as_bytes() {
-                // Already identical: record and done.
                 sync.store
                     .set_attachment(path, existing_hash, blob_hash, false)?;
                 return Ok(changed);
             }
-            // Keep-both: the local file was modified after the last sync
-            // record and a different remote version is landing — rename
-            // ours aside first.
-            //
-            // Concurrent edits that BOTH already uploaded resolve by
-            // deterministic LWW (documented v1 semantics for binaries;
-            // races within one sync window are rare for attachments). The
-            // causal fix — per-attachment CRDT docs reusing the note-doc
-            // machinery — is scheduled for the sync polish pass.
             let locally_dirty = stored
                 .as_ref()
                 .is_some_and(|(hash, _, _)| *hash != existing_hash);
             if locally_dirty {
-                let conflict = conflict_path(path);
+                let conflict = conflict_path(path, "local");
                 if let Ok(conflict_note) = NotePath::new(&conflict) {
                     self.vault.rename(&note_path, &conflict_note)?;
                     self.index
@@ -884,6 +958,66 @@ impl Engine {
             .set_attachment(path, *blake3::hash(&plaintext).as_bytes(), blob_hash, false)?;
         changed.push(path.to_owned());
         Ok(changed)
+    }
+
+    /// Materialize a concurrent loser as a keep-both conflict copy. The
+    /// name derives from the loser's blob hash, so every device creates
+    /// the SAME copy (idempotent across the fleet). Returns the conflict
+    /// path if newly created.
+    pub fn attachment_store_conflict(
+        &mut self,
+        path: &str,
+        loser_hash: &str,
+        ciphertext: &[u8],
+    ) -> Result<Option<String>, EngineError> {
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let plaintext = onyx_crypto::decrypt(&sync.key, ciphertext)
+            .map_err(|error| EngineError::Sync(onyx_sync::SyncError::Corrupt(error.to_string())))?;
+        let conflict = conflict_path(path, loser_hash);
+        let Ok(conflict_note) = NotePath::new(&conflict) else {
+            return Ok(None);
+        };
+        if self.vault.fs().exists(&conflict_note) {
+            return Ok(None); // already materialized (here or via sync)
+        }
+        self.vault.write(&conflict_note, &plaintext)?;
+        self.index
+            .handle_event(&self.vault, &VaultEvent::Created(conflict_note.clone()))?;
+        let id = self.vault.note_id(&conflict_note);
+        if let Some(record) = self.index.note(id)? {
+            self.quick
+                .upsert(id, &record.title, record.path.as_str(), &[]);
+        }
+        Ok(Some(conflict))
+    }
+
+    /// Collapse a processed conflict to its winner (a causal, sequential
+    /// doc update — concurrent identical collapses dedupe).
+    pub fn attachment_collapse(&mut self, path: &str, winner: &str) -> Result<(), EngineError> {
+        use std::collections::hash_map::Entry;
+
+        let sync = self.sync.as_mut().ok_or(EngineError::SyncDisabled)?;
+        let Ok(note_path) = NotePath::new(path) else {
+            return Ok(());
+        };
+        let doc_id = *self.vault.note_id(&note_path).as_bytes();
+        let doc = match sync.docs.entry(doc_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let Some((doc, _)) = sync.store.load_doc(doc_id, sync.peer)? else {
+                    return Ok(());
+                };
+                entry.insert(doc)
+            }
+        };
+        doc.set_blob(winner)?;
+        let stored_hash = sync
+            .store
+            .attachment(path)?
+            .map(|(hash, _, _)| hash)
+            .unwrap_or([0; 32]);
+        sync.store.save_doc(doc_id, doc, stored_hash)?;
+        Ok(())
     }
 
     /// Flush pending search changes (debounced by the event loop).

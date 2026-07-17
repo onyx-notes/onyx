@@ -530,30 +530,63 @@ pub fn sync_cycle(
         engine.set_sync_cursor(last).map_err(engine_err)?;
     }
 
-    // Attachment inbox: deletions from the merged manifest, then missing
-    // blobs (downloaded without the lock, stored under it).
+    // Attachment inbox: pointer docs merged during apply; fetch winners
+    // (and concurrent losers as keep-both copies), then collapse resolved
+    // conflicts. Deletions already rode the manifest tombstones.
     let needed = {
         let mut guard = engine.lock();
         let Some(engine) = guard.as_mut() else {
             return Ok(changed);
         };
-        changed.extend(engine.apply_attachment_deletes().map_err(engine_err)?);
         engine.attachments_needed().map_err(engine_err)?
     };
-    for (path, blob_hash) in needed {
-        let ciphertext = match client.get_blob(vault_id, &blob_hash) {
+    for fetch in needed {
+        let ciphertext = match client.get_blob(vault_id, &fetch.winner) {
             Ok(bytes) => bytes,
             Err(error) => {
                 // Blob not on the server yet (uploader mid-flight): retry
                 // next cycle rather than failing the whole sync.
-                tracing::debug!(%error, %path, "blob fetch deferred");
+                tracing::debug!(%error, path = %fetch.path, "blob fetch deferred");
                 continue;
             }
         };
         if let Some(engine) = engine.lock().as_mut() {
-            match engine.attachment_store(&path, &blob_hash, &ciphertext) {
+            match engine.attachment_store(&fetch.path, &fetch.winner, &ciphertext) {
                 Ok(paths) => changed.extend(paths),
-                Err(error) => tracing::warn!(%error, %path, "attachment store failed"),
+                Err(error) => {
+                    tracing::warn!(%error, path = %fetch.path, "attachment store failed");
+                    continue;
+                }
+            }
+        }
+        // Keep-both: every concurrent loser materializes as an identical
+        // conflict copy on every device, then the doc collapses.
+        let mut all_losers_stored = true;
+        for loser in &fetch.losers {
+            let ciphertext = match client.get_blob(vault_id, loser) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::debug!(%error, "loser blob fetch deferred");
+                    all_losers_stored = false;
+                    continue;
+                }
+            };
+            if let Some(engine) = engine.lock().as_mut() {
+                match engine.attachment_store_conflict(&fetch.path, loser, &ciphertext) {
+                    Ok(Some(conflict)) => changed.push(conflict),
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "conflict copy failed");
+                        all_losers_stored = false;
+                    }
+                }
+            }
+        }
+        if !fetch.losers.is_empty() && all_losers_stored {
+            if let Some(engine) = engine.lock().as_mut() {
+                if let Err(error) = engine.attachment_collapse(&fetch.path, &fetch.winner) {
+                    tracing::warn!(%error, "conflict collapse failed");
+                }
             }
         }
     }
