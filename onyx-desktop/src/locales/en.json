@@ -58,5 +58,8 @@
   "backup.none": "No backup destinations configured (edit .onyx/backups.json)",
   "backup.now": "Back up now",
   "backup.running": "Backing up…",
-  "backup.done": "Backup complete: {uploaded} uploaded, {skipped} unchanged"
+  "backup.done": "Backup complete: {uploaded} uploaded, {skipped} unchanged",
+  "palette.placeholder": "Run a command…",
+  "plugins.none": "No plugins installed (drop folders into .onyx/plugins/)",
+  "plugins.restartHint": "Plugin changes apply when the vault is reopened"
 }

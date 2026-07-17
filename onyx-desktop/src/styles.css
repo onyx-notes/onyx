@@ -601,3 +601,8 @@ img.onyx-embed-image {
 .outline-item {
   font-size: 13px;
 }
+
+.settings-caps {
+  color: var(--onyx-text-muted);
+  font-size: 11px;
+}

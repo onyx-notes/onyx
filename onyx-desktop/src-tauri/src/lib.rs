@@ -54,6 +54,8 @@ pub fn run() {
             commands::set_backup_config,
             commands::backup_now,
             commands::list_backup_snapshots,
+            commands::list_plugins,
+            commands::set_plugin_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Onyx");

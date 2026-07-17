@@ -544,3 +544,98 @@ pub async fn list_backup_snapshots(
         .await
         .map_err(err)?
 }
+
+// ---------------------------------------------------------------------------
+// Plugin commands
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifest {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    /// Declared capabilities: "vault:read", "vault:write", "ui:commands".
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInfo {
+    #[serde(flatten)]
+    pub manifest: PluginManifest,
+    pub enabled: bool,
+}
+
+fn plugins_dir(state: &State<'_, AppState>) -> CmdResult<std::path::PathBuf> {
+    let guard = state.engine.lock();
+    let engine = guard.as_ref().ok_or("no vault is open")?;
+    Ok(engine.root().join(".onyx/plugins"))
+}
+
+fn disabled_plugins(state: &State<'_, AppState>) -> CmdResult<Vec<String>> {
+    state.with_engine(|engine| {
+        let path = onyx_core::NotePath::new(".onyx/plugins-disabled.json").expect("static");
+        Ok(engine
+            .vault()
+            .fs()
+            .read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default())
+    })
+}
+
+/// Installed plugins (valid manifests under `.onyx/plugins/*`), with their
+/// enabled state.
+#[tauri::command]
+pub fn list_plugins(state: State<'_, AppState>) -> CmdResult<Vec<PluginInfo>> {
+    let dir = plugins_dir(&state)?;
+    let disabled = disabled_plugins(&state)?;
+    let mut plugins = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(plugins); // no plugins directory yet
+    };
+    for entry in entries.flatten() {
+        let manifest_path = entry.path().join("manifest.json");
+        let Ok(bytes) = std::fs::read(&manifest_path) else {
+            continue;
+        };
+        let Ok(manifest) = serde_json::from_slice::<PluginManifest>(&bytes) else {
+            tracing::warn!(path = %manifest_path.display(), "invalid plugin manifest skipped");
+            continue;
+        };
+        // The manifest id must match its directory (path-safety + identity).
+        if Some(manifest.id.as_str()) != entry.file_name().to_str() {
+            continue;
+        }
+        if !entry.path().join("main.js").is_file() {
+            continue;
+        }
+        let enabled = !disabled.contains(&manifest.id);
+        plugins.push(PluginInfo { manifest, enabled });
+    }
+    plugins.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+    Ok(plugins)
+}
+
+#[tauri::command]
+pub fn set_plugin_enabled(state: State<'_, AppState>, id: String, enabled: bool) -> CmdResult<()> {
+    let mut disabled = disabled_plugins(&state)?;
+    disabled.retain(|entry| entry != &id);
+    if !enabled {
+        disabled.push(id);
+    }
+    state.with_engine(|engine| {
+        let path = onyx_core::NotePath::new(".onyx/plugins-disabled.json").expect("static");
+        engine
+            .vault()
+            .fs()
+            .write_atomic(&path, &serde_json::to_vec_pretty(&disabled).map_err(err)?)
+            .map_err(err)
+    })
+}

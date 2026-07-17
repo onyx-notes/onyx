@@ -5,6 +5,8 @@
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type NoteInfo, type Settings, api } from "./api";
+import CommandPalette, { type PaletteCommand } from "./components/CommandPalette";
+import { PluginHost, type PluginCommand } from "./plugins/host";
 import Editor from "./components/Editor";
 import QuickSwitcher from "./components/QuickSwitcher";
 import RightPanel from "./components/RightPanel";
@@ -51,6 +53,41 @@ export default function App() {
   );
   const [status, setStatus] = createSignal("");
   const [syncState, setSyncState] = createSignal<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
+  const [pluginCommands, setPluginCommands] = createSignal<PluginCommand[]>([]);
+
+  const pluginHost = new PluginHost({
+    onNotice: (pluginId, message) => setStatus(`[${pluginId}] ${message}`),
+    onCommandsChanged: (commands) => setPluginCommands(commands),
+  });
+  onCleanup(() => pluginHost.destroy());
+
+  const loadPlugins = async () => {
+    try {
+      for (const plugin of await api.listPlugins()) {
+        if (plugin.enabled) pluginHost.load(plugin);
+      }
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const paletteCommands = (): PaletteCommand[] => [
+    { id: "app.daily", name: t("daily.open"), run: () => void openDailyNote() },
+    { id: "app.settings", name: t("settings.title"), run: () => setShowSettings(true) },
+    { id: "app.newTab", name: t("tabs.new"), run: () => workspace.newTab() },
+    {
+      id: "app.vertical",
+      name: t("tabs.vertical"),
+      run: () => workspace.toggleVertical(),
+    },
+    { id: "app.lock", name: t("vault.lock"), run: () => void lockVault() },
+    ...pluginCommands().map((command) => ({
+      id: `${command.pluginId}:${command.commandId}`,
+      name: `${command.name}`,
+      run: () => pluginHost.runCommand(command.pluginId, command.commandId),
+    })),
+  ];
 
   const activePath = workspace.activePath;
 
@@ -128,6 +165,7 @@ export default function App() {
     setSettings(loaded);
     applySettings(loaded);
     await refreshNotes();
+    await loadPlugins();
     setStatus(t("vault.noteCount", { count: info.noteCount }));
   };
 
@@ -232,7 +270,10 @@ export default function App() {
     const onKey = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
-      if (mod && key === "p") {
+      if (mod && event.shiftKey && key === "p") {
+        event.preventDefault();
+        if (vaultRoot() !== null) setPaletteOpen(true);
+      } else if (mod && key === "p") {
         event.preventDefault();
         if (vaultRoot() !== null) setQuickOpen(true);
       } else if (mod && key === "t") {
@@ -417,6 +458,13 @@ export default function App() {
         <QuickSwitcher
           onPick={(path) => openNote(path)}
           onClose={() => setQuickOpen(false)}
+        />
+      </Show>
+
+      <Show when={paletteOpen()}>
+        <CommandPalette
+          commands={paletteCommands()}
+          onClose={() => setPaletteOpen(false)}
         />
       </Show>
     </div>

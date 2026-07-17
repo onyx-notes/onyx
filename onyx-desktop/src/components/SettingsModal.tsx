@@ -19,6 +19,12 @@ export default function SettingsModal(props: {
   const [syncResult, setSyncResult] = createSignal<string | null>(null);
   const [backupResult, setBackupResult] = createSignal<string | null>(null);
   const [backupConfig] = createResource(() => api.getBackupConfig());
+  const [plugins, { refetch: refetchPlugins }] = createResource(() => api.listPlugins());
+
+  const togglePlugin = async (id: string, enabled: boolean) => {
+    await api.setPluginEnabled(id, enabled);
+    await refetchPlugins();
+  };
 
   const runBackup = async (name: string) => {
     setBackupResult(t("backup.running"));
@@ -159,6 +165,34 @@ export default function SettingsModal(props: {
             <Show when={syncResult()}>
               {(message) => <div class="settings-imported">{message()}</div>}
             </Show>
+          </div>
+
+          <div class="settings-import">
+            <Show
+              when={(plugins()?.length ?? 0) > 0}
+              fallback={<div class="settings-imported">{t("plugins.none")}</div>}
+            >
+              <For each={plugins() ?? []}>
+                {(plugin) => (
+                  <div class="settings-row">
+                    <span title={plugin.capabilities.join(", ")}>
+                      {plugin.name}{" "}
+                      <span class="settings-caps">
+                        [{plugin.capabilities.join(", ")}]
+                      </span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={plugin.enabled}
+                      onChange={(event) =>
+                        void togglePlugin(plugin.id, event.currentTarget.checked)
+                      }
+                    />
+                  </div>
+                )}
+              </For>
+            </Show>
+            <div class="settings-imported">{t("plugins.restartHint")}</div>
           </div>
 
           <div class="settings-import">

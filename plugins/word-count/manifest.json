@@ -1,0 +1,7 @@
+{
+  "id": "word-count",
+  "name": "Vault Word Count",
+  "version": "0.1.0",
+  "description": "Adds a command that counts words across every note in the vault.",
+  "capabilities": ["vault:read", "ui:commands"]
+}

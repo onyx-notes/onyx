@@ -76,6 +76,15 @@ export interface BackupConfig {
   autoIntervalHours: number;
 }
 
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  enabled: boolean;
+}
+
 export interface BackupReport {
   snapshotId: number;
   files: number;
@@ -125,6 +134,9 @@ export const api = {
     invoke<BackupReport>("backup_now", { destination }),
   listBackupSnapshots: (destination: string) =>
     invoke<number[]>("list_backup_snapshots", { destination }),
+  listPlugins: () => invoke<PluginInfo[]>("list_plugins"),
+  setPluginEnabled: (id: string, enabled: boolean) =>
+    invoke<void>("set_plugin_enabled", { id, enabled }),
 
   onVaultEvent: (handler: (event: VaultEvent) => void): Promise<UnlistenFn> =>
     listen<VaultEvent>("onyx://vault-event", (event) => handler(event.payload)),
