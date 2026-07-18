@@ -2,6 +2,7 @@
 
 #[cfg(desktop)]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -237,10 +238,19 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Start the background sync agent for the open vault, replacing any
 /// previous agent.
+///
+/// The `reqwest::blocking` client is built inside the agent thread, never by
+/// the caller. That client owns a Tokio runtime, and constructing (or later
+/// dropping) a runtime inside another runtime's context panics with "Cannot
+/// drop a runtime in a context where blocking is not allowed" — which is
+/// exactly what happens when sync auto-resumes from an `async` Tauri command
+/// such as `open_vault`. This dedicated thread is never an async context.
 pub fn spawn_sync_agent(
     app: &AppHandle,
     state: &AppState,
-    mut client: crate::sync::SyncClient,
+    server_url: String,
+    device: crate::sync::DeviceIdentity,
+    blob_cache: Option<PathBuf>,
     vault_id: [u8; 16],
 ) {
     let (stop_sender, stop_receiver) = crossbeam_channel::bounded::<()>(0);
@@ -257,6 +267,23 @@ pub fn spawn_sync_agent(
     let _ = std::thread::Builder::new()
         .name("onyx-sync-agent".into())
         .spawn(move || {
+            // Build the HTTP client here (see the doc comment): its Tokio
+            // runtime must be born and buried off the async executor.
+            let mut client = match crate::sync::SyncClient::new(&server_url, device) {
+                Ok(mut client) => {
+                    if let Some(dir) = blob_cache {
+                        client.set_blob_cache(dir);
+                    }
+                    client
+                }
+                Err(error) => {
+                    let mut info = status.lock();
+                    info.state = "error".into();
+                    info.last_error = Some(error.to_string());
+                    return;
+                }
+            };
+
             // Join once (idempotent); failures surface as status and retry.
             loop {
                 match client.join(vault_id) {

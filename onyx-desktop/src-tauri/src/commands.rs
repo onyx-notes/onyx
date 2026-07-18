@@ -400,13 +400,17 @@ pub(crate) fn start_sync(
     };
     let _ = (op_key, root);
 
-    let mut client = crate::sync::SyncClient::new(&config.server_url, device).map_err(err)?;
     // Stage resumable large-blob downloads under the app data dir, keyed by
     // vault, so a dropped connection resumes instead of restarting.
-    if let Ok(base) = app.path().app_data_dir() {
-        client.set_blob_cache(base.join("blobcache").join(HEXLOWER.encode(&vault_id)));
-    }
-    crate::state::spawn_sync_agent(app, state, client, vault_id);
+    let blob_cache = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|base| base.join("blobcache").join(HEXLOWER.encode(&vault_id)));
+    // The agent builds its own HTTP client on its own thread — see
+    // spawn_sync_agent: the reqwest::blocking runtime must not be created or
+    // dropped on an async Tauri command's executor.
+    crate::state::spawn_sync_agent(app, state, config.server_url.clone(), device, blob_cache, vault_id);
     // Remember the config so an app pause/resume can restart the agent.
     *state.active_sync.lock() = Some(config.clone());
     Ok(())
