@@ -13,9 +13,20 @@ export interface QuickSwitcherProps {
 export default function QuickSwitcher(props: QuickSwitcherProps) {
   const [query, setQuery] = createSignal("");
   const [selected, setSelected] = createSignal(0);
-  const [hits] = createResource(query, (q) => api.quickOpen(q), {
-    initialValue: [],
-  });
+  // Title fuzzy-match first, then full-text hits for the same query so
+  // content-only matches surface too (deduped by path, title hits win).
+  const [hits] = createResource(
+    query,
+    async (q) => {
+      const [titleHits, contentHits] = await Promise.all([
+        api.quickOpen(q),
+        q.trim().length > 0 ? api.searchNotes(q).catch(() => []) : Promise.resolve([]),
+      ]);
+      const seen = new Set(titleHits.map((hit) => hit.path));
+      return [...titleHits, ...contentHits.filter((hit) => !seen.has(hit.path))];
+    },
+    { initialValue: [] },
+  );
 
   const move = (delta: number) => {
     const count = hits().length;
