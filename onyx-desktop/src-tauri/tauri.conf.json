@@ -55,7 +55,7 @@
   },
   "plugins": {
     "deep-link": {
-      "mobile": [],
+      "mobile": [{ "scheme": ["onyx"] }],
       "desktop": {
         "schemes": ["onyx"]
       }

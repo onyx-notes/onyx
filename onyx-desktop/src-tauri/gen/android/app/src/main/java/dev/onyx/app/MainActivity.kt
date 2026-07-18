@@ -3,13 +3,53 @@ package dev.onyx.app
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.webkit.WebView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 
 class MainActivity : TauriActivity() {
+  private var webView: WebView? = null
+
+  /**
+   * Wry's default back handling replays webview session history. The shell
+   * is a SPA with its own navigation stack, and Chromium's history
+   * manipulation intervention marks programmatic pushState entries as
+   * skippable — the history dance eventually runs dry and a back press
+   * falls out of the app while overlays are still open. We own back
+   * instead and ask the SPA first (see __onyxHandleBack in MobileApp).
+   */
+  override val handleBackNavigation: Boolean
+    get() = false
+
+  override fun onWebViewCreate(webView: WebView) {
+    this.webView = webView
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     intent = rewriteShareIntent(intent)
     super.onCreate(savedInstanceState)
+
+    onBackPressedDispatcher.addCallback(
+      this,
+      object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+          val view = webView ?: return fallthrough(this)
+          view.evaluateJavascript(
+            "window.__onyxHandleBack ? window.__onyxHandleBack() : false"
+          ) { consumed ->
+            if (consumed != "true") fallthrough(this)
+          }
+        }
+      },
+    )
+  }
+
+  /** Re-dispatch back with our callback disabled: default minimize/finish. */
+  private fun fallthrough(callback: OnBackPressedCallback) {
+    callback.isEnabled = false
+    onBackPressedDispatcher.onBackPressed()
+    callback.isEnabled = true
   }
 
   override fun onNewIntent(intent: Intent) {

@@ -8,13 +8,14 @@ import {
   requestPermissions,
   scan,
 } from "@tauri-apps/plugin-barcode-scanner";
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent as getCurrentDeepLink, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 
 import { type ManagedVault, type NoteInfo, type Settings, api } from "../api";
 import ChatPanel from "../components/ChatPanel";
 import Editor, { type EditorControls } from "../components/Editor";
 import GraphView from "../components/GraphView";
+import HistoryPanel from "../components/HistoryPanel";
 import QuickSwitcher from "../components/QuickSwitcher";
 import ReadingView from "../components/ReadingView";
 import RightPanel from "../components/RightPanel";
@@ -68,6 +69,7 @@ export default function MobileApp() {
   const [keyboardOpen, setKeyboardOpen] = createSignal(false);
   const [readingMode, setReadingMode] = createSignal(false);
   const [graphOpen, setGraphOpen] = createSignal(false);
+  const [historyOpen, setHistoryOpen] = createSignal(false);
 
   const activePath = () => navStack().at(-1) ?? null;
   const report = (error: unknown) =>
@@ -101,12 +103,28 @@ export default function MobileApp() {
   };
 
   const goBack = () => {
+    if (historyOpen()) return setHistoryOpen(false);
     if (graphOpen()) return setGraphOpen(false);
+    if (quickOpen()) return setQuickOpen(false);
+    if (chatOpen()) return setChatOpen(false);
+    if (settingsOpen()) return setSettingsOpen(false);
     if (sheetOpen()) return setSheetOpen(false);
     if (drawerOpen()) return setDrawerOpen(false);
     if (readingMode()) return setReadingMode(false);
     setNavStack((stack) => (stack.length > 1 ? stack.slice(0, -1) : stack));
   };
+
+  /** True while something is open that a back press should unwind. */
+  const backConsumable = () =>
+    historyOpen() ||
+    graphOpen() ||
+    quickOpen() ||
+    chatOpen() ||
+    settingsOpen() ||
+    sheetOpen() ||
+    drawerOpen() ||
+    readingMode() ||
+    navStack().length > 1;
 
   const saveNote = async (body: string) => {
     const path = activePath();
@@ -217,6 +235,7 @@ export default function MobileApp() {
       await refreshNotes();
       setVaultName(name);
       setVaultOpen(true);
+      void openDaily();
     } catch (error) {
       report(error);
     }
@@ -324,8 +343,15 @@ export default function MobileApp() {
 
     setVaults(await api.listManagedVaults().catch(() => []));
 
-    // Deep links: cold-start URL + while-running opens. Fails harmlessly in
-    // the desktop dev override where the plugin isn't registered.
+    // Deep links. `onOpenUrl` only covers links that arrive while the app
+    // runs; a cold-start link is only available via `getCurrent` (the
+    // native event fires before any JS listener exists). Both fail
+    // harmlessly in the desktop dev override where the plugin is absent.
+    getCurrentDeepLink()
+      .then((urls) => {
+        for (const link of urls ?? []) void handleDeepLink(link);
+      })
+      .catch(() => undefined);
     onOpenUrl((urls) => {
       for (const link of urls) void handleDeepLink(link);
     })
@@ -365,14 +391,16 @@ export default function MobileApp() {
     }, 5000);
     onCleanup(() => clearInterval(poll));
 
-    // Android back gesture arrives as history popstate in the webview.
-    history.pushState(null, "");
-    const onPop = () => {
-      history.pushState(null, "");
+    // Android back: the native activity asks us first (MainActivity's
+    // OnBackPressedCallback evaluates this hook). Return true when the
+    // press was consumed; false lets the OS minimize the app.
+    const globals = window as unknown as { __onyxHandleBack?: () => boolean };
+    globals.__onyxHandleBack = () => {
+      if (!backConsumable()) return false;
       goBack();
+      return true;
     };
-    window.addEventListener("popstate", onPop);
-    onCleanup(() => window.removeEventListener("popstate", onPop));
+    onCleanup(() => delete globals.__onyxHandleBack);
 
     // Keyboard-aware layout: size the app to the visual viewport so the
     // bottom bar and editor stay visible above the keyboard.
@@ -538,6 +566,14 @@ export default function MobileApp() {
                 >
                   {t("mobile.graph")}
                 </button>
+                <button
+                  onClick={() => {
+                    setHistoryOpen(true);
+                    setSheetOpen(false);
+                  }}
+                >
+                  {t("history.title")}
+                </button>
               </div>
               <RightPanel
                 path={activePath()}
@@ -560,6 +596,26 @@ export default function MobileApp() {
             }}
             onClose={() => setGraphOpen(false)}
           />
+        </Show>
+
+        <Show when={historyOpen() && activePath()}>
+          {(path) => (
+            <HistoryPanel
+              path={path()}
+              onClose={() => setHistoryOpen(false)}
+              onRestored={() => {
+                void (async () => {
+                  try {
+                    setContent(await api.readNote(path()));
+                    setReloadSignal((n) => n + 1);
+                    await refreshNotes();
+                  } catch (error) {
+                    report(error);
+                  }
+                })();
+              }}
+            />
+          )}
         </Show>
 
         <Show when={quickOpen()}>
