@@ -15,13 +15,13 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude domain="file" path="device.key" />
-        <exclude domain="file" path="vaults" />
+        <exclude domain="root" path="device.key" />
+        <exclude domain="root" path="vaults" />
         <exclude domain="sharedpref" path="onyx.secrets.xml" />
     </cloud-backup>
     <device-transfer>
-        <exclude domain="file" path="device.key" />
-        <exclude domain="file" path="vaults" />
+        <exclude domain="root" path="device.key" />
+        <exclude domain="root" path="vaults" />
         <exclude domain="sharedpref" path="onyx.secrets.xml" />
     </device-transfer>
 </data-extraction-rules>
