@@ -227,6 +227,7 @@ export const api = {
   syncJoin: (serverUrl: string, code: string) =>
     invoke<void>("sync_join", { serverUrl, code }),
   syncStatus: () => invoke<SyncStatus>("sync_status"),
+  syncConfig: () => invoke<{ serverUrl: string } | null>("sync_config"),
   platformInfo: () => invoke<{ os: string; mobile: boolean }>("platform_info"),
   listManagedVaults: () => invoke<ManagedVault[]>("list_managed_vaults"),
   createManagedVault: (name: string, passphrase: string | null) =>

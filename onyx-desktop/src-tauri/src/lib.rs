@@ -74,6 +74,7 @@ pub fn run() {
             commands::sync_enable,
             commands::sync_join,
             commands::sync_status,
+            commands::sync_config,
             commands::get_backup_config,
             commands::set_backup_config,
             commands::backup_now,

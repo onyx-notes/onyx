@@ -6,6 +6,7 @@ import { For, Show, createResource, createSignal } from "solid-js";
 
 import { type AiConfig, type Settings, api } from "../api";
 import { t } from "../i18n";
+import QrCode from "./QrCode";
 
 export default function SettingsModal(props: {
   settings: Settings;
@@ -140,6 +141,20 @@ export default function SettingsModal(props: {
   // Device pairing (enrollment): approve side + receive side.
   const [pairResult, setPairResult] = createSignal<string | null>(null);
   const [pairCodeInput, setPairCodeInput] = createSignal("");
+  const [showQr, setShowQr] = createSignal(false);
+
+  // Prefill the server URL from the saved sync config so a synced vault can
+  // show its pairing QR without the operator retyping the server.
+  void api.syncConfig().then((config) => {
+    if (config && syncUrl().length === 0) setSyncUrl(config.serverUrl);
+  });
+
+  // The pairing bootstrap a new device scans: it prefills the server and
+  // starts enrollment (see MobileApp.handleDeepLink / scanJoinQr).
+  const enrollLink = () => {
+    const server = syncUrl().trim();
+    return server.length > 0 ? `onyx://enroll?server=${encodeURIComponent(server)}` : "";
+  };
 
   const approveDevice = async () => {
     try {
@@ -305,6 +320,23 @@ export default function SettingsModal(props: {
             </div>
             <Show when={pairResult()}>
               {(message) => <div class="settings-imported">{message()}</div>}
+            </Show>
+
+            <div class="settings-row">
+              <button class="settings-button" onClick={() => setShowQr((on) => !on)}>
+                {showQr() ? t("pair.hideQr") : t("pair.showQr")}
+              </button>
+            </div>
+            <Show when={showQr()}>
+              <Show
+                when={enrollLink().length > 0}
+                fallback={<div class="settings-imported">{t("pair.qrNeedsServer")}</div>}
+              >
+                <div class="pairing-qr">
+                  <QrCode data={enrollLink()} />
+                  <span class="settings-caps">{t("pair.qrHint")}</span>
+                </div>
+              </Show>
             </Show>
           </div>
 

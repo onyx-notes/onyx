@@ -495,6 +495,25 @@ pub fn sync_status(state: State<'_, AppState>) -> crate::state::SyncStatusInfo {
     state.sync_status.lock().clone()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConfigInfo {
+    pub server_url: String,
+}
+
+/// The open vault's saved sync server URL, if sync is configured. Lets the
+/// UI render a pairing QR (`onyx://enroll?server=…`) without the operator
+/// retyping the server after reopening a synced vault.
+#[tauri::command]
+pub fn sync_config(state: State<'_, AppState>) -> Option<SyncConfigInfo> {
+    let guard = state.engine.lock();
+    let engine = guard.as_ref()?;
+    let config = crate::sync::load_config(engine.vault())?;
+    Some(SyncConfigInfo {
+        server_url: config.server_url,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Backup commands
 // ---------------------------------------------------------------------------
