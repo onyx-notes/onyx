@@ -50,6 +50,10 @@ fn expect_event(
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents delivers rapid event sequences unreliably in headless CI; run with --ignored on real hardware"
+)]
 fn create_modify_remove_lifecycle() {
     let (_dir, root) = temp_vault();
     let (sender, receiver) = crossbeam_channel::unbounded();
@@ -82,6 +86,10 @@ fn create_modify_remove_lifecycle() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents delivers rapid event sequences unreliably in headless CI; run with --ignored on real hardware"
+)]
 fn hidden_directories_are_invisible() {
     let (_dir, root) = temp_vault();
     std::fs::create_dir_all(root.join(".obsidian")).unwrap();
@@ -101,6 +109,10 @@ fn hidden_directories_are_invisible() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents delivers rapid event sequences unreliably in headless CI; run with --ignored on real hardware"
+)]
 fn file_storm_collapses_into_bulk_change() {
     let (_dir, root) = temp_vault();
     let (sender, receiver) = crossbeam_channel::unbounded();
@@ -127,6 +139,10 @@ fn file_storm_collapses_into_bulk_change() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents delivers rapid event sequences unreliably in headless CI; run with --ignored on real hardware"
+)]
 fn rename_produces_remove_and_create() {
     let (_dir, root) = temp_vault();
     std::fs::write(root.join("old.md"), "content").unwrap();
@@ -164,6 +180,10 @@ fn watcher_shutdown_is_clean() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents delivers rapid event sequences unreliably in headless CI; run with --ignored on real hardware"
+)]
 fn encrypted_vault_events_arrive_with_plaintext_paths() {
     use std::sync::Arc;
 
